@@ -679,7 +679,9 @@ really puts the extreme, because the Fit solves the curve for the lift that
 
 ## 13. RFC-032/031 overscan and the date back — wire fields (2026-10-01)
 
-**Status: specified, not yet in this engine.** Until it lands, this engine refuses these names (`unknown parameter`). The section is the contract every frontend builds against.
+**Status: in this engine since 2026-10-02** (`engine/src/pipeline/overscan.cpp`, `shaders/overscan.metal`). The section is the contract every frontend builds against. Checked when it landed: `overscan_checks.py` (34), `parity_schema.py` (the twenty rows are pinned in `NATIVE_ONLY`), `parity_session.py`, and 18 off-path renders byte-identical to the engine before it.
+
+**With the Digital Intermediate** (RFC-028): `film_present` runs before the DI node, so the film's edge and the gate are in the DI, but the scan's view of the holes (`spk_overscan_light`) has no DI counterpart and the perforations do not show. Open.
 
 Twenty native-only fields, all **shoot layer** and **not live**. Every mark
 (gate shadow, fog, leaks, edge print, DX code, date) is exposure on the
