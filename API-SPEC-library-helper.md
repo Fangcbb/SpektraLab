@@ -5,8 +5,8 @@
 | **Status** | The binary is in the repository. The app does not launch it yet: this document is the contract the 2.0 library work builds against. |
 | **Binary** | `vendor/spklib/macos/spklib-host`, `spklib 0.1.0+f4de46cf119a (abi 1, schema 1)`. Its SHA-256 is in `spklib-host.sha256` beside it. |
 | **Platform** | Universal (arm64 + x86_64), macOS 13.0 or later (the app needs 15.0). Stripped, ad-hoc signed. |
-| **Source** | Closed. Built by `./build.sh release` in the private `SpektraLab_library` repository, at the commit named in its version. |
-| **Licence** | `spklib-host` is a separate, proprietary program that SpektraLab starts and talks to over pipes. It is not covered by this repository's GPL licence, and nothing in this repository links it. |
+| **Source** | [JamesQiu2005/SpektraLab_library](https://github.com/JamesQiu2005/SpektraLab_library). Built there by `./build.sh release`, at the commit named in its version. |
+| **Licence** | MIT (the SDK repository's `LICENSE`). It is a separate program that SpektraLab starts and talks to over pipes; this repository carries the built binary, not its source. |
 | **Date** | 2026-10-18 |
 
 SpektraLab 2.0 manages libraries the way Capture One does: catalogs, sessions, albums, folders,
@@ -102,7 +102,9 @@ Contents/Helpers/spklib-host --store ~/Library/Application\ Support/SpektraLab/L
 
 ## 4. Methods
 
-`sdk.methods` lists the table from the binary itself. *L* means the method takes `library`.
+The SDK's own [`API-SPEC.md`](https://github.com/JamesQiu2005/SpektraLab_library/blob/main/API-SPEC.md)
+is the authoritative spec. Where this table and that file differ, that file wins and this table is
+stale. `sdk.methods` lists the table from the binary itself. *L* means the method takes `library`.
 
 | Method | L | Params | Result |
 |---|---|---|---|
@@ -214,7 +216,7 @@ frames and their edits.
 
 ## 7. Updating the binary
 
-In `SpektraLab_library`:
+In [`SpektraLab_library`](https://github.com/JamesQiu2005/SpektraLab_library):
 
 1. Run `./build.sh test` with `SPKLIB_C1_CATALOG` set to a real catalog. It ends by proving the
    catalog package is unchanged.
