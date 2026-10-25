@@ -1,2 +1,3 @@
 891fb99e927480d4fb9ce5b010822d962ef3d75d3c0f72e7fef0ae9438d4f4ec  SpektraLab_1.3.1_x64-pathfix-setup.exe
 891fb99e927480d4fb9ce5b010822d962ef3d75d3c0f72e7fef0ae9438d4f4ec  SpektraLab_1.3.1_x64-setup.exe
+247cad699042da6a346272f199f910e4e94b56fc35a5e2776e204ea74121caf4  SpektraLab_1.3.2_x64-setup.exe
