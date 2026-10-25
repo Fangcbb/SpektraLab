@@ -5,7 +5,11 @@
 #include <iostream>
 #include <stdexcept>
 
+#ifdef _WIN32
+int wmain(int argc, wchar_t** argv) {
+#else
 int main(int argc, char** argv) {
+#endif
     try {
 #ifdef _WIN32
         const auto extended = spk::file_path(R"(\\?\C:\Program Files\SpektraLab\host\engine/spektrafilm_constants.bin)");
@@ -16,16 +20,18 @@ int main(int argc, char** argv) {
             throw std::runtime_error("extended UNC path contains a forward slash");
 #endif
         if (argc != 2) throw std::runtime_error("usage: file_path_test <engine-resources>");
-        std::string root = argv[1];
 #ifdef _WIN32
-        auto native = std::filesystem::absolute(spk::file_path(root)).native();
+        auto native = std::filesystem::path(argv[1]).native();
         if (native.rfind(LR"(\\?\)", 0) != 0) {
+            native = std::filesystem::absolute(std::filesystem::path(native)).native();
             native = native.rfind(LR"(\\)", 0) == 0
                 ? LR"(\\?\UNC\)" + native.substr(2)
                 : LR"(\\?\)" + native;
         }
         const auto utf8 = std::filesystem::path(native).u8string();
-        root.assign(utf8.begin(), utf8.end());
+        const std::string root(utf8.begin(), utf8.end());
+#else
+        const std::string root = argv[1];
 #endif
         spk::Blob blob;
         std::string error;
