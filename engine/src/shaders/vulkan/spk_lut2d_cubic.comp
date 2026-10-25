@@ -1,4 +1,5 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
 
 // Hanatos spectral upsampling, back half. Mitchell weights and mirrored
 // indices follow spk_common.h; the LUT is (L, L, 3) row-major.
@@ -9,11 +10,7 @@ layout(set = 0, binding = 2, std430) readonly buffer Lut { float value[]; } lut_
 layout(set = 0, binding = 3, std430) readonly buffer Meta { uint value[]; } meta;
 layout(set = 0, binding = 4, std430) writeonly buffer Output { float value[]; } output_data;
 
-// vulkan_gpu.cpp folds a dispatch past maxComputeWorkGroupCount[0] (65535 on
-// lavapipe and Intel) into rows of workgroups; this is the 1D index it means.
-uint spk_global_index() {
-    return gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
-}
+#include "spk_dispatch.glsl"
 
 float mitchell(float t) {
     const float B = 1.0 / 3.0;

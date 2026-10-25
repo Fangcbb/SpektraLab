@@ -156,8 +156,8 @@ const set = (p: Partial<SessionState>) => sessionStore.setState(p);
 //
 // "Sent vs wanted" (`RenderScheduler.swift`): one render in flight; edits
 // made while it runs only move what is wanted, and the loop catches up with
-// the newest state when it lands. The original-resolution render starts
-// 400 ms after the last edit and is dropped if anything moved meanwhile.
+// the newest state when it lands. Original-resolution rendering is explicit
+// by default; optional idle rendering is dropped if anything moved meanwhile.
 
 let sentParams: FilmParams | null = null;
 let wantedGen = 0;
@@ -166,10 +166,14 @@ let fullTimer: ReturnType<typeof setTimeout> | null = null;
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let lastUndoAt = 0;
 let openGen = 0;
-const FULL_DELAY_MS = 400;
+const FULL_DELAY_MS = 1500;
 
 function noteError(op: string, e: unknown) {
   const msg = e instanceof HostCallError ? `${e.message} (${e.code})` : e instanceof Error ? e.message : String(e);
+  if (msg.includes('VkResult -4')) {
+    settingsStore.getState().set('autoFullRender', false);
+    if (fullTimer) clearTimeout(fullTimer);
+  }
   platform().log('error', `${op}: ${msg}`);
   set({ lastError: `${op}: ${msg}`, status: tz(`${op} failed: ${msg}`, `${op} 失败：${msg}`) });
 }
@@ -196,18 +200,18 @@ function noteAsShot() {
   scheduleSave();
 }
 
-export async function requestPrint(): Promise<void> {
+export async function requestPrint(): Promise<boolean> {
   wantedGen++;
   if (fullTimer) clearTimeout(fullTimer);
-  if (inFlight) return;
+  if (inFlight) return false;
   const sid = get().engineSession;
-  if (!sid) return;
+  if (!sid) return false;
   inFlight = true;
   try {
     for (;;) {
       const gen = wantedGen;
       const s = get();
-      if (s.engineSession !== sid) return;
+      if (s.engineSession !== sid) return false;
       const want = s.sidecar.params;
       const d = sentParams ? paramsDelta(want, sentParams, s.gate) : { delta: wireParams(want), layers: new Set(['shoot']) };
       if (Object.keys(d.delta).length) {
@@ -216,25 +220,35 @@ export async function requestPrint(): Promise<void> {
       }
       const reprint = d.layers.size === 1 && d.layers.has('print');
       const r = await host().render(sid, 'live', { reprint });
-      if (get().engineSession !== sid) return;
+      if (get().engineSession !== sid) return false;
       frameImages.print = r;
       set({ imageVersion: get().imageVersion + 1, badge: 'preview', status: '' });
       if (gen === wantedGen) break;
     }
   } catch (e) {
     noteError(tz('Render', '渲染'), e);
+    return false;
   } finally {
     inFlight = false;
   }
   scheduleFull();
+  return true;
 }
 
 function scheduleFull() {
   if (fullTimer) clearTimeout(fullTimer);
+  const native = get().nativeSize;
+  if (native && Math.max(native.width, native.height) <= previewEdge()) {
+    set({ badge: 'full' });
+    void refreshThumb();
+    return;
+  }
   // An export run renders the frame itself, at the file's own resolution.
-  if (get().batchExporting) return;
+  if (get().batchExporting || !settingsStore.getState().autoFullRender) return;
   const gen = wantedGen;
-  fullTimer = setTimeout(() => void renderFull(gen), FULL_DELAY_MS);
+  fullTimer = setTimeout(() => {
+    if (settingsStore.getState().autoFullRender) void renderFull(gen);
+  }, FULL_DELAY_MS);
 }
 
 async function renderFull(gen: number) {
@@ -264,6 +278,17 @@ async function renderFull(gen: number) {
     inFlight = false;
     if (gen !== wantedGen) void requestPrint();
   }
+}
+
+/** Explicit original-resolution render; exports independently retain full quality. */
+export async function requestFullPrint(): Promise<void> {
+  if (inFlight || get().batchExporting || !get().engineSession) {
+    setStatus(tz('Wait for the current operation to finish.', '请等待当前操作完成。'));
+    return;
+  }
+  const previewReady = await requestPrint();
+  if (fullTimer) clearTimeout(fullTimer);
+  if (previewReady && get().hostState.phase === 'ready') await renderFull(wantedGen);
 }
 
 async function refreshThumb() {
@@ -875,6 +900,9 @@ function takeHostState(st: HostState) {
       }
     }
   } else if (st.phase === 'restarting' || st.phase === 'failed') {
+    // A new device reopens at preview quality; never replay a failing full job.
+    settingsStore.getState().set('autoFullRender', false);
+    if (fullTimer) clearTimeout(fullTimer);
     set({ engineSession: null, status: st.phase === 'failed' ? st.reason : tz('Restarting the engine…', '正在重启引擎…') });
     sentParams = null;
   }

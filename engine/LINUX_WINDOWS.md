@@ -145,3 +145,23 @@ A minimal client is `engine/tests/host_smoke.py` (`class Host`): write
 - Verified real-GPU runs on Linux, and runs on real Windows: only lavapipe
   and wine here. The original Windows port's RTX acceptance predates main's
   later commits and this branch's backend changes (`PORT_COVERAGE.md` §5).
+
+## Windows large-photo scheduling (desktop 1.3.2)
+
+Interactive editing defaults to preview rendering (2560 px long edge). In
+Settings > Rendering, users can explicitly render original resolution or opt
+into idle full rendering (1.5 s). Exports still request full-resolution pixels.
+A service restart disables idle full rendering, avoiding automatic replay of a
+job that lost the device.
+
+Vulkan compute submissions process up to 1,048,576 invocations; the recursive
+IIR blur processes up to 512 whole line/channel invocations per submission.
+Every chunk uses a push-constant global offset (`spk_dispatch.glsl`), so pixel
+indices, grain seeds and complete line recurrences retain their original meaning.
+The fixed 256-workgroup reduction remains one submission. This bounds workload,
+not elapsed GPU time, and cannot guarantee avoidance of Windows driver resets.
+Kernel runs over 250 ms log name, extent, submission count and time; failures
+also log the failing offset and pool allocation bytes. Device loss returns the
+request error then exits the host with code 75 so the bounded desktop supervisor
+can recreate its Vulkan device. Actual NVIDIA/AMD/Intel hardware validation
+remains necessary; Wine/lavapipe validates numerics and protocol only.

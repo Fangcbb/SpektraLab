@@ -45,6 +45,12 @@ A response may carry a binary payload (pixels, encoded thumbnail).
 Error codes: `bad_request`, `not_found`, `decode_failed`, `engine_error`,
 `unsupported`, `cancelled`, `io_error`, `internal`.
 
+A runtime Vulkan device-loss error (`VkResult -4`) is returned to the caller,
+then the host exits with status 75. The desktop supervisor recreates the
+process/device using its existing bounded restart policy. Pending operations
+fail rather than being replayed. The selected photo reopens at preview quality;
+automatic full rendering is disabled after restart. Exports require a new request.
+
 ## 2. Pixel payloads
 
 A result that carries pixels has `result.image`:

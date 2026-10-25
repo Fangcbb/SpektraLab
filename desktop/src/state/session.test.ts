@@ -1,7 +1,7 @@
 // The store's edit doors, against a stand-in host and platform: what makes an
 // undo step and what does not.
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const calls: string[] = [];
 vi.mock('../host/client', () => {
@@ -30,7 +30,8 @@ vi.mock('../platform', () => ({
   dirName: (p: string) => p,
 }));
 
-import { recomputeFilmFormat, sessionStore, setDecode, setGeometry, setParams, undo } from './session';
+import { recomputeFilmFormat, requestPrint, requestFullPrint, sessionStore, setDecode, setGeometry, setParams, undo } from './session';
+import { host } from '../host/client';
 import type { HelloResult } from '@shared/protocol';
 import { settingsStore } from './settings';
 import { newSidecar } from '@shared/sidecar';
@@ -51,6 +52,46 @@ beforeEach(() => {
     batchExporting: false,
   });
   settingsStore.getState().set('recalculateEffectsAfterCrop', true);
+  settingsStore.getState().set('autoFullRender', false);
+});
+
+afterEach(() => vi.useRealTimers());
+
+describe('large-photo rendering', () => {
+  it('keeps editing at preview resolution by default', async () => {
+    vi.useFakeTimers();
+    await requestPrint();
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(calls).toContain('render:live');
+    expect(calls).not.toContain('render:full');
+  });
+
+  it('renders original resolution when explicitly requested', async () => {
+    sessionStore.setState({ hostState: { phase: 'ready', hello: {} as HelloResult } });
+    await requestFullPrint();
+    expect(calls).toContain('render:full');
+  });
+
+  it('supports optional idle full rendering after 1.5 seconds', async () => {
+    vi.useFakeTimers();
+    settingsStore.getState().set('autoFullRender', true);
+    await requestPrint();
+    await vi.advanceTimersByTimeAsync(1499);
+    expect(calls).not.toContain('render:full');
+    await vi.advanceTimersByTimeAsync(1);
+    expect(calls).toContain('render:full');
+  });
+
+  it('stops idle full rendering after device loss', async () => {
+    vi.useFakeTimers();
+    settingsStore.getState().set('autoFullRender', true);
+    vi.mocked(host().render).mockRejectedValueOnce(new Error('Vulkan compute dispatch failed (VkResult -4)'));
+    await requestPrint();
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(settingsStore.getState().autoFullRender).toBe(false);
+    expect(calls).not.toContain('render:full');
+    expect(sessionStore.getState().lastError).toContain('VkResult -4');
+  });
 });
 
 describe('the derived film format', () => {

@@ -1,4 +1,5 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
 
 // Per-channel linear combination, including the blur-mixture and unsharp
 // mask paths. Matches blur.metal's scalar operation and binding order.
@@ -10,11 +11,7 @@ layout(set = 0, binding = 3, std430) readonly buffer B { float value[]; } b_data
 layout(set = 0, binding = 4, std430) readonly buffer Count { uint value[]; } count_data;
 layout(set = 0, binding = 5, std430) writeonly buffer Output { float value[]; } output_data;
 
-// vulkan_gpu.cpp folds a dispatch past maxComputeWorkGroupCount[0] (65535 on
-// lavapipe and Intel) into rows of workgroups; this is the 1D index it means.
-uint spk_global_index() {
-    return gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
-}
+#include "spk_dispatch.glsl"
 
 void main() {
     uint i = spk_global_index();

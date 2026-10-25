@@ -20,9 +20,9 @@ Porting one kernel is the same five edits each time:
 
 1. `src/shaders/vulkan/<kernel>.comp` -- GLSL 450 compute, `local_size_x = 256`,
    one `std430` storage buffer per Metal `[[buffer(n)]]`, **in the same
-   binding order**; the 1D index is `spk_global_index()` (copy the helper from
-   any existing `.comp`; dispatches past 65535 workgroups fold into 2D,
-   `vulkan_gpu.cpp` `dispatch`). Mark arithmetic that must not be contracted
+   binding order**; include `spk_dispatch.glsl` for `spk_global_index()`.
+   The backend submits bounded work with a push-constant global offset; preserve
+   that offset for pixel indexing and RNG streams. Mark arithmetic that must not be contracted
    `precise` (Metal builds with `-fmetal-math-mode=safe`, AGENTS.md "Do not").
    If the kernel uses double-float pairs, declare
    `layout(constant_id = 0) const bool SPK_FUSED_FMA = true;` and copy
@@ -33,7 +33,7 @@ Porting one kernel is the same five edits each time:
    `tests/gpu_vulkan_pointwise.cpp`: the Metal kernel transcribed into C++
    **double** as the reference, random and edge-case inputs (0, negatives,
    NaN where the Metal comments promise behaviour, 1-pixel and odd sizes, a
-   >16.7 M-thread case to cross the dispatch fold), a bound stated in the test
+   >1,048,576-thread case to cross a submission boundary), a bound stated in the test
    (pointwise kernels: ~4 float ulp relative; anything with `pow`/`exp`: 1e-6
    relative). Register it in the `foreach(probe ...)` list in `CMakeLists.txt`.
 5. Remove the feature from the refusal: `src/pipeline/windows_unported.hpp`

@@ -1,4 +1,5 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
 
 // Per-channel fast_interp, with the same right-biased binary search as
 // spk_common.h. The baked x/y tables are interleaved (K,3).
@@ -10,11 +11,7 @@ layout(set = 0, binding = 3, std430) readonly buffer YAxis { float value[]; } y_
 layout(set = 0, binding = 4, std430) readonly buffer Meta { uint value[]; } meta;
 layout(set = 0, binding = 5, std430) writeonly buffer Output { float value[]; } output_data;
 
-// vulkan_gpu.cpp folds a dispatch past maxComputeWorkGroupCount[0] (65535 on
-// lavapipe and Intel) into rows of workgroups; this is the 1D index it means.
-uint spk_global_index() {
-    return gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
-}
+#include "spk_dispatch.glsl"
 
 float interpolate(uint count, uint channel, float value) {
     float x0 = x_axis.value[channel];

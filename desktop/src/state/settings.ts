@@ -18,6 +18,7 @@ export interface Settings {
   language: LanguageSetting;
   interfaceScale: InterfaceScale;
   previewLongEdge: number;
+  autoFullRender: boolean;
   sideUnit: SideUnit;
   decoupleEffects: boolean;
   recalculateEffectsAfterCrop: boolean;
@@ -37,6 +38,7 @@ export const SETTINGS_DEFAULT: Settings = {
   language: 'system',
   interfaceScale: 115,
   previewLongEdge: 2560,
+  autoFullRender: false,
   sideUnit: 'mm',
   decoupleEffects: false,
   recalculateEffectsAfterCrop: false,

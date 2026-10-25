@@ -132,7 +132,7 @@ a GPU that already worked):
 
 | change | why | where |
 |---|---|---|
-| dispatches past `maxComputeWorkGroupCount[0]` fold into 2D; shaders take `spk_global_index()` | 65535 groups x 256 = 16.7 M threads: every frame over 16.7 MP failed on lavapipe, and on Intel (same limit) | `src/gpu/vulkan_gpu.cpp` `dispatch`, every `src/shaders/vulkan/*.comp` |
+| bounded submissions with global push-constant offsets; shaders take `spk_global_index()` | 65535 groups x 256 = 16.7 M threads: every frame over 16.7 MP failed on lavapipe, and on Intel (same limit) | `src/gpu/vulkan_gpu.cpp` `dispatch`, every `src/shaders/vulkan/*.comp` |
 | on a CPU device only, a start-up probe lifts `maxStorageBufferRange` (128 MiB on lavapipe) after proving larger SSBOs read and write correctly | nothing over ~11 MP rendered on the CPU fallback | `vulkan_gpu.cpp` `probe_cpu_storage_range`; off with `SPEKTRAFILM_VULKAN_STRICT_LIMITS=1` |
 | exact Veltkamp/Dekker `two_prod` when `fma` is unfused (specialization constant 0) | lavapipe's `fma` is mul+add: the IIR blur lost its low word and erred by 0.4 % | `spk_iir_df_acc.comp`, `spk_geometry_resample_df.comp` |
 | resources and SPIR-V opened through UTF-8 wide paths on Windows | an install folder under a non-ASCII user name would not start | `src/core/file_path.hpp`, four `ifstream` sites |

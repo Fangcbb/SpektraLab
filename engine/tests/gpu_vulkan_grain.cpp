@@ -19,7 +19,7 @@ namespace {
 using spk::gpu::Arg;
 using spk::gpu::BufferRef;
 using spk::gpu::Gpu;
-constexpr uint32_t kSamples = 524288;
+constexpr uint32_t kSamples = 1048833;
 constexpr size_t kGuard = 16;
 constexpr float kSentinel = -12345.0f;
 

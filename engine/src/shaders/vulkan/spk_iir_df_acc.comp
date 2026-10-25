@@ -1,4 +1,5 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
 
 // Direct port of blur.metal's Young & van Vliet recurrence. Each invocation
 // owns one complete line/channel; the forward float32 plane is read again by
@@ -14,11 +15,7 @@ layout(set = 0, binding = 4, std430) readonly buffer MixWeights { float value[];
 layout(set = 0, binding = 5, std430) readonly buffer Meta { uint value[]; } meta;
 layout(set = 0, binding = 6, std430) buffer Output { float value[]; } output_data;
 
-// vulkan_gpu.cpp folds a dispatch past maxComputeWorkGroupCount[0] (65535 on
-// lavapipe and Intel) into rows of workgroups; this is the 1D index it means.
-uint spk_global_index() {
-    return gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
-}
+#include "spk_dispatch.glsl"
 
 // (hi, lo) float pairs, translated from spk_common.h. precise preserves the
 // error-free transforms: only the explicit fma in two_prod may be fused.

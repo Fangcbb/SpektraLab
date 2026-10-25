@@ -1,16 +1,13 @@
 // The resample half of util.metal's tier downscale. The Gaussian prefilter
 // remains the existing mirror-mode spk_sep_fir_acc pass on the host.
 #version 450
+#extension GL_GOOGLE_include_directive : require
 layout(local_size_x = 256) in;
 layout(std430, binding = 0) readonly buffer Img { float img[]; };
 layout(std430, binding = 1) readonly buffer Meta { uint meta[]; };
 layout(std430, binding = 2) writeonly buffer Out { float dst[]; };
 
-// vulkan_gpu.cpp folds a dispatch past maxComputeWorkGroupCount[0] (65535 on
-// lavapipe and Intel) into rows of workgroups; this is the 1D index it means.
-uint spk_global_index() {
-    return gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
-}
+#include "spk_dispatch.glsl"
 
 // Pair layout is {low, high}. Use exact two-word integer arithmetic instead
 // of requiring Vulkan shaderInt64, or rounding a large pixel coordinate.

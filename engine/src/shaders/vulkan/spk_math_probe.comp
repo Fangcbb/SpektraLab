@@ -1,4 +1,5 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
 
 // The rounded product must stay separate from the fused operation. This is
 // checked against an exact binary64 product residual when the engine starts.
@@ -8,11 +9,7 @@ layout(local_size_x = 1) in;
 layout(set = 0, binding = 0, std430) readonly buffer Input { float value[]; } input_data;
 layout(set = 0, binding = 1, std430) writeonly buffer Output { float value[]; } output_data;
 
-// vulkan_gpu.cpp folds a dispatch past maxComputeWorkGroupCount[0] (65535 on
-// lavapipe and Intel) into rows of workgroups; this is the 1D index it means.
-uint spk_global_index() {
-    return gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
-}
+#include "spk_dispatch.glsl"
 
 void main() {
     uint i = spk_global_index();

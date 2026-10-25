@@ -500,20 +500,14 @@ public:
             error = std::string(kernel) + ": wrong argument count";
             return false;
         }
-        // One workgroup row while it fits (bit-identical to a plain 1D
-        // dispatch); past maxComputeWorkGroupCount[0] -- 65535 on lavapipe and
-        // Intel, the spec minimum, i.e. 16.7 M threads, less than a 24 MP
-        // frame -- the groups fold into rows, and every kernel recovers the 1D
-        // index with spk_global_index(). The surplus threads of the last row
-        // fail the same bounds check the last partial workgroup always did.
+        // Bound the work per submission so large frames do not become one
+        // uninterruptible Windows GPU job. Recursive blur owns whole lines;
+        // split between lines, never within the recurrence.
+        if (n_threads > UINT32_MAX) { error = "Vulkan thread index exceeds uint32"; return false; }
+        const size_t threads_per_submit = std::strcmp(kernel, "spk_iir_df_acc") == 0 ? 512 : 1048576;
         const size_t groups = (n_threads + spec->workgroup - 1) / spec->workgroup;
-        const size_t max_x = properties_.limits.maxComputeWorkGroupCount[0];
-        const size_t groups_x = std::min(groups, max_x);
-        const size_t groups_y = (groups + groups_x - 1) / groups_x;
-        if (groups_y > properties_.limits.maxComputeWorkGroupCount[1]) {
-            error = "Vulkan dispatch exceeds maxComputeWorkGroupCount";
-            return false;
-        }
+        const size_t groups_limit = std::min(threads_per_submit / spec->workgroup,
+            size_t(properties_.limits.maxComputeWorkGroupCount[0]));
         // Inline uploads submit transfers too. Resolve them before taking the
         // non-recursive queue/command-pool lock; their BufferRefs stay live
         // through completion of the dispatch below.
@@ -571,14 +565,35 @@ public:
         }
         vkUpdateDescriptorSets(device_, uint32_t(writes.size()), writes.data(), 0, nullptr);
 
-        const bool submitted = submit_sync([&](VkCommandBuffer command) {
+        bool submitted = true;
+        const auto started = std::chrono::steady_clock::now();
+        for (size_t first_group = 0; first_group < groups; first_group += groups_limit) {
+            const uint32_t base = uint32_t(first_group * spec->workgroup);
+            const uint32_t count = uint32_t(std::min(groups_limit, groups - first_group));
+            submitted = submit_sync([&](VkCommandBuffer command) {
                 device_barrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                                VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
                 vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline->pipeline);
                 vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline->layout,
                                         0, 1, &set, 0, nullptr);
-                vkCmdDispatch(command, uint32_t(groups_x), uint32_t(groups_y), 1);
+                vkCmdPushConstants(command, pipeline->layout, VK_SHADER_STAGE_COMPUTE_BIT,
+                                   0, sizeof(base), &base);
+                vkCmdDispatch(command, count, 1, 1);
             }, "Vulkan compute dispatch", error);
+            if (!submitted) {
+                const auto stats = pool_stats();
+                error += " [kernel=" + std::string(kernel) + ", threads=" + std::to_string(n_threads) +
+                    ", offset=" + std::to_string(base) + ", pool_bytes=" +
+                    std::to_string(stats.total_bytes + stats.persistent_bytes) + "]";
+                std::fprintf(stderr, "spektralab Vulkan: %s\n", error.c_str());
+                break;
+            }
+        }
+        const double elapsed = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - started).count();
+        if (elapsed >= 250.0 || transfer_timings_)
+            std::fprintf(stderr, "spektralab Vulkan: kernel=%s threads=%zu submissions=%zu ms=%.1f\n",
+                kernel, n_threads, (groups + groups_limit - 1) / groups_limit, elapsed);
         vkDestroyDescriptorPool(device_, descriptor_pool, nullptr);
         return submitted;
     }
@@ -959,6 +974,9 @@ private:
         if (result == VK_SUCCESS) {
             VkPipelineLayoutCreateInfo layout_create{};
             layout_create.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+            const VkPushConstantRange offset_range{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(uint32_t)};
+            layout_create.pushConstantRangeCount = 1;
+            layout_create.pPushConstantRanges = &offset_range;
             layout_create.setLayoutCount = 1;
             layout_create.pSetLayouts = &p.descriptors;
             result = vkCreatePipelineLayout(device_, &layout_create, nullptr, &p.layout);

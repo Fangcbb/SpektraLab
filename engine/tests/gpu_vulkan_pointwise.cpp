@@ -64,7 +64,7 @@ bool check_values(Gpu* gpu, const BufferRef& output, const std::vector<double>& 
 }
 
 bool check_mul_glare_boost(Gpu* gpu, std::string& error) {
-    const uint32_t counts[] = {0, 1, 2, 255, 256, 257, 1025};
+    const uint32_t counts[] = {0, 1, 2, 255, 256, 257, 1025, 1048575, 1048576, 1048577};
     const float illuminant[] = {0.96422f, 1.0f, 0.82521f};
     const float boost[] = {0.25f, 0.125f, 3.0f, 2.0f};
     auto illuminant_buffer = gpu->upload(illuminant, sizeof illuminant, error);

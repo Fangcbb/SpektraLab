@@ -1,4 +1,5 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
 
 // Transfer modes and exact breakpoints follow nodes.metal/core/colour.cpp.
 layout(local_size_x = 256) in;
@@ -6,11 +7,7 @@ layout(set = 0, binding = 0, std430) readonly buffer Input { float value[]; } in
 layout(set = 0, binding = 1, std430) readonly buffer Meta { uint value[]; } meta;
 layout(set = 0, binding = 2, std430) writeonly buffer Output { float value[]; } output_data;
 
-// vulkan_gpu.cpp folds a dispatch past maxComputeWorkGroupCount[0] (65535 on
-// lavapipe and Intel) into rows of workgroups; this is the 1D index it means.
-uint spk_global_index() {
-    return gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
-}
+#include "spk_dispatch.glsl"
 
 float signed_power(float value, float exponent) {
     float sign_value = value < 0.0 ? -1.0 : (value > 0.0 ? 1.0 : 0.0);

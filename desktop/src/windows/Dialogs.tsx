@@ -8,7 +8,7 @@ import { PillMenu, ToggleRow } from '../controls/controls';
 import { t, tz } from '../i18n';
 import { host } from '../host/client';
 import { platform, type AppPaths } from '../platform';
-import { recomputeFilmFormat, requestPrint, setPages, useSession, sessionStore } from '../state/session';
+import { recomputeFilmFormat, requestPrint, requestFullPrint, setPages, useSession, sessionStore } from '../state/session';
 import { INTERFACE_SCALES, PREVIEW_EDGES, settingsStore, useSettings, SETTINGS_DEFAULT } from '../state/settings';
 import { featureGate } from '@shared/params';
 
@@ -113,10 +113,16 @@ export function SettingsDialog() {
               />
               <div className="caption">
                 {tz(
-                  "The resolution every interactive edit renders at. The frame's own resolution is rendered separately once an edit settles, so this trades responsiveness while dragging against nothing in the finished picture.",
-                  '每次交互编辑的渲染分辨率。编辑停下后会另外按照片本身的分辨率渲染，所以这里只是拖动时的流畅度，与最终画面无关。',
+                  'Interactive preview resolution. Original-resolution rendering is optional; exports retain full resolution.',
+                  '交互编辑的预览分辨率。原尺寸渲染可按需运行，导出仍使用完整分辨率。',
                 )}
               </div>
+              <ToggleRow label={tz('Render original resolution automatically', '自动渲染原尺寸')}
+                on={st.autoFullRender} onChange={(v) => set('autoFullRender', v)} />
+              <div className="caption">{tz('Off by default to reduce GPU load while editing large photos.', '默认关闭，减少编辑大照片时的显卡负载。')}</div>
+              <button className="btn" onClick={() => void requestFullPrint()}>
+                {tz('Render original resolution now', '立即渲染原尺寸')}
+              </button>
             </div>
             <div className="settings-group">
               <h3>{tz('Film effects', '胶片效果')}</h3>

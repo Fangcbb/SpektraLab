@@ -1,4 +1,5 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
 
 // Hanatos spectral upsampling, front half. The matrix is row-major here,
 // matching nodes.metal's spk_tc_b (not spk_matmul3's convention).
@@ -9,11 +10,7 @@ layout(set = 0, binding = 2, std430) readonly buffer Meta { uint value[]; } meta
 layout(set = 0, binding = 3, std430) writeonly buffer Coordinates { float value[]; } tc_data;
 layout(set = 0, binding = 4, std430) writeonly buffer Brightness { float value[]; } brightness_data;
 
-// vulkan_gpu.cpp folds a dispatch past maxComputeWorkGroupCount[0] (65535 on
-// lavapipe and Intel) into rows of workgroups; this is the 1D index it means.
-uint spk_global_index() {
-    return gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
-}
+#include "spk_dispatch.glsl"
 
 void main() {
     uint i = spk_global_index();

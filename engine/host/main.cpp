@@ -925,6 +925,8 @@ std::condition_variable g_queue_cv;
 std::deque<Request> g_queue;
 bool g_queue_closed = false;
 
+[[noreturn]] void quit(int code);
+
 void worker() {
     for (;;) {
         Request q;
@@ -940,6 +942,12 @@ void worker() {
             dispatch(q);
         } catch (const HostError& e) {
             respond_error(q.id, e.code, e.message);
+            if (e.message.find("VkResult -4") != std::string::npos) {
+                // A lost device cannot accept further uploads. Let the desktop
+                // supervisor recreate the process/device with its restart budget.
+                log_line(0, "Vulkan device lost; exiting to restart the engine: " + e.message);
+                quit(75);
+            }
         } catch (const std::bad_alloc&) {
             respond_error(q.id, "internal", "out of memory");
         } catch (const std::exception& e) {
