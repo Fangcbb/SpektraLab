@@ -63,7 +63,7 @@ if(BUILD_TESTING)
     add_executable(spk_file_path tests/file_path_test.cpp)
     target_link_libraries(spk_file_path PRIVATE spektralab_core)
     if(MINGW)
-        target_link_options(spk_file_path PRIVATE -municode)
+        target_link_options(spk_file_path PRIVATE -municode -static)
     endif()
     add_test(NAME spk_file_path
         COMMAND spk_file_path "${CMAKE_CURRENT_SOURCE_DIR}/resources")
