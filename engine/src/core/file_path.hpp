@@ -8,6 +8,7 @@
 #pragma once
 #include <string>
 #ifdef _WIN32
+#include <algorithm>
 #include <filesystem>
 #endif
 
@@ -15,7 +16,13 @@ namespace spk {
 
 #ifdef _WIN32
 inline std::filesystem::path file_path(const std::string& utf8) {
-    return std::filesystem::path(std::u8string(utf8.begin(), utf8.end()));
+    // Tauri's resource directory may use the extended \\?\ prefix. Win32
+    // does not translate forward slashes for such paths, including the ones
+    // the portable engine appends when naming a resource. Preserve the prefix
+    // (and long-path support), but use native separators at the I/O boundary.
+    std::u8string native(utf8.begin(), utf8.end());
+    std::replace(native.begin(), native.end(), u8'/', u8'\\');
+    return std::filesystem::path(native);
 }
 #else
 inline const std::string& file_path(const std::string& utf8) { return utf8; }

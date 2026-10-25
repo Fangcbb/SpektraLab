@@ -60,6 +60,11 @@ target_include_directories(spektralab_pipeline PRIVATE
 )
 
 if(BUILD_TESTING)
+    add_executable(spk_file_path tests/file_path_test.cpp)
+    target_link_libraries(spk_file_path PRIVATE spektralab_core)
+    add_test(NAME spk_file_path
+        COMMAND spk_file_path "${CMAKE_CURRENT_SOURCE_DIR}/resources")
+
     add_executable(spk_dump_json tests/dump_json.cpp)
     target_link_libraries(spk_dump_json PRIVATE spektralab_core)
     add_test(NAME spk_core_schema

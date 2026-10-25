@@ -1,4 +1,5 @@
 #include "blob.hpp"
+#include "file_path.hpp"
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -60,13 +61,11 @@ Blob::~Blob() {
 
 bool Blob::open(const std::string& path, std::string& error) {
 #ifdef _WIN32
-    // The C API passes UTF-8 paths. Keep Windows conversion at the file boundary.
-    const int length = ::MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
-                                             path.c_str(), -1, nullptr, 0);
-    if (length == 0) { error = "invalid UTF-8 path: " + path; return false; }
-    std::wstring wide(static_cast<size_t>(length), L'\0');
-    if (::MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path.c_str(), -1,
-                              wide.data(), length) == 0) {
+    // Use the same UTF-8/native-separator conversion as JSON and shader I/O.
+    std::wstring wide;
+    try {
+        wide = file_path(path).native();
+    } catch (const std::filesystem::filesystem_error&) {
         error = "invalid UTF-8 path: " + path;
         return false;
     }

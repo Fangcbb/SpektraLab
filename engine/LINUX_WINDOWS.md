@@ -95,6 +95,7 @@ file, and the staged directory copied under a non-ASCII name.
 | | what | where |
 |---|---|---|
 | `spk_core_schema`, `spk_core_setup` | the portable core: schema and setup constants | ctest |
+| `spk_file_path` | resource blob and JSON reads; on Windows, extended drive/UNC separators and actual reads through a `\\?\` path | ctest |
 | `spk_vulkan_smoke`, `_grain`, `_pointwise`, `_resample`, `_transfer`, `_geometry`, `_lut_di` | every Vulkan kernel against float64 or exact references | ctest |
 | `spk_windows_feature_boundaries` | the refused features are refused and leave the session usable | ctest |
 | `spk_windows_c_abi` | a render through the shared library's C ABI | ctest |
@@ -105,6 +106,13 @@ Camera files are never committed (`tests/Test_image/` is the fork's; trap
 26). The smoke test writes its own PNG and TIFF; pass real RAWs to exercise
 LibRaw. On lavapipe a 12 MP NEF renders its preview tier in ~8-10 s; this is
 a CPU device, not a benchmark (AGENTS.md trap 17).
+
+Windows installed-app validation must also use a resource path such as
+`\\?\C:\Program Files\SpektraLab\host\engine`, which Tauri can return for
+the resource directory. Win32 does not translate `/` under the extended-path
+prefix. `file_path.hpp` normalizes separators at resource I/O boundaries,
+including the constants blob, profile JSON and Vulkan shaders; do not remove
+the prefix to work around this, since it preserves long-path support.
 
 **lavapipe as a device.** It is accepted, and stated in
 `capabilities.backend.math_mode`, with two differences from a GPU, both
