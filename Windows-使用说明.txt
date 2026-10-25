@@ -1,0 +1,21 @@
+SpektraLab 1.3.1 Windows x64
+
+目标系统：Windows 10 22H2 / Windows 11，64 位 x86-64 电脑。
+安装包：SpektraLab_1.3.1_x64-setup.exe（NSIS，中英文，支持当前用户或所有用户安装）。
+运行条件：支持 Vulkan 的显卡及驱动；Microsoft Edge WebView2 Runtime。
+WebView2 未安装时，安装器会联网下载引导程序；此包不是完整离线安装包。
+未做数字签名，Windows 可能显示未知发布者或 SmartScreen 提示。
+
+验证：Linux 引擎 CTest 14/14；主机烟雾测试通过；前端类型检查和 lint 通过；
+前端单元测试 51 通过、1 项 RAW 真实主机测试因缺相机样本跳过；
+Playwright 6/6；Rust 测试 5/5；Windows 引擎在 Wine/Mesa 下渲染与导出通过；
+安装包解出的引擎及资源也通过相同烟雾测试。
+
+限制：当前机器是 Linux，尚未在真实 Windows 10/11 上执行安装、卸载和 WebView2 GUI 验收。
+Wine 引擎测试不能替代真机测试；未验证真实显卡性能、相机 RAW 样本或 macOS 功能对等性。
+Windows 端的部分功能尚未移植，参见 engine/PORT_COVERAGE.md 与 desktop/PARITY.md。
+
+源码提交：99c2d5c9883be485085895157279cc7c4eaa8db6
+构建方式：. /workspace/toolchain/activate.sh
+          bash /workspace/onboarding/build-windows.sh
+应用源码、测试、依赖声明和锁文件均未修改。
