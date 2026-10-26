@@ -889,5 +889,12 @@
    800.0,
    8192.0
   ]
+ },
+ {
+  "name": "camera_filter",
+  "path": "camera.filter",
+  "type": "str",
+  "layer": "shoot",
+  "default": ""
  }
 ]

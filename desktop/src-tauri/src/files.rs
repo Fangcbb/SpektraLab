@@ -21,7 +21,7 @@ pub const IMAGE_EXTENSIONS: &[&str] = &[
     "3fr", "ari", "arw", "bay", "cr2", "cr3", "crw", "dcr", "dng", "erf", "fff", "iiq", "k25", "kdc", "mef",
     "mos", "mrw", "nef", "nrw", "orf", "pef", "raf", "raw", "rw2", "rwl", "sr2", "srf", "srw", "x3f",
     // rasters
-    "tif", "tiff", "jpg", "jpeg", "png",
+    "tif", "tiff", "jpg", "jpeg", "png", "spektrapair",
 ];
 
 pub fn is_image(p: &Path) -> bool {

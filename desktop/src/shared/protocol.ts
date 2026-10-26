@@ -131,7 +131,7 @@ export interface FileMetadata {
 }
 
 export interface ProbeResult {
-  kind: 'raw' | 'tiff' | 'jpeg' | 'png';
+  kind: 'raw' | 'tiff' | 'jpeg' | 'png' | 'pair';
   width: number;
   height: number;
   metadata: FileMetadata;

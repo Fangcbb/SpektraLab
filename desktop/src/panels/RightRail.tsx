@@ -5,7 +5,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Checkbox, NumberField, PillMenu, ScrubSlider, Section, SegmentedSwitch, ToggleRow, signed } from '../controls/controls';
 import { t, tz } from '../i18n';
-import { hostRedecodes, setAdjustments, setDecode, setFilmFrame, setFilmSide, setParams, setSideLengthMM, useSession } from '../state/session';
+import { editingAdjustments, hostRedecodes, setAdjustments, setDecode, setFilmFrame, setFilmSide, setParams, setSideLengthMM, useSession } from '../state/session';
 import { settingsStore, useSettings } from '../state/settings';
 import {
   type AEMethod,
@@ -40,7 +40,7 @@ import { host, HostCallError } from '../host/client';
 
 export function RightRail() {
   const tab = useSettings((s) => s.parametersTab);
-  const edited = useSession((s) => s.sidecar.adjustments.enabled && !isNeutral(s.sidecar.adjustments));
+  const edited = useSession((s) => editingAdjustments(s).enabled && !isNeutral(editingAdjustments(s)));
   return (
     <aside className="rail right" data-testid="right-rail">
       <div className="rail-header">{t('railParameters')}</div>
@@ -158,7 +158,7 @@ function LatitudePlot({ reply }: { reply: LatitudeReply | null }) {
 
 function CameraSection() {
   const p = useSession((s) => s.sidecar.params);
-  const vignette = useSession((s) => s.sidecar.adjustments.vignette.amount);
+  const vignette = useSession((s) => editingAdjustments(s).vignette.amount);
   const ae = aeMethodOf(p);
   const lensReason = tz(
     'Lens correction is not available on Linux and Windows: the RAW decoder carries no lens profiles.',
@@ -191,6 +191,9 @@ function CameraSection() {
         })),
       ]}
     >
+      <PillMenu label={tz('Lens colour filter','镜头色彩滤镜')} value={p.cameraFilter}
+        options={[{value:'',label:tz('None','无')},...['w8','w11','w12','w15','w21','w25','w47','w58'].map(value=>({value,label:value.toUpperCase()}))]}
+        onChange={cameraFilter=>setParams(q=>({...q,cameraFilter}))}/>
       <PillMenu label={t('cameraMetering')} value={ae} options={options} fill onChange={(v) => setParams((q) => applyAEMethod(q, v))} testId="metering" />
       <ScrubSlider
         label={t('cameraFilmExposure')}
@@ -369,7 +372,7 @@ function ScenePlacementSection() {
 // ---------------------------------------------------------------- Post-Dev
 
 function WhiteBalanceSection() {
-  const a = useSession((s) => s.sidecar.adjustments);
+  const a = useSession((s) => editingAdjustments(s));
   return (
     <Section id="wb2" title={t('sectionWhiteBalance')} trailing={t('statusRightRailWBScope')} onReset={() => setAdjustments((q) => ({ ...q, temperature: 0, tint: 0 }))} resetHelp={t('helpReset')}>
       <ScrubSlider label={t('cameraTemperature')} value={a.temperature} range={[-100, 100]} snap={5} format={signed(0)} gradient="linear-gradient(90deg,#5d7de8,#bbb,#e8c04e)" onChange={(v) => setAdjustments((q) => ({ ...q, temperature: v }))} />
@@ -379,7 +382,7 @@ function WhiteBalanceSection() {
 }
 
 function ExposureSection() {
-  const a = useSession((s) => s.sidecar.adjustments);
+  const a = useSession((s) => editingAdjustments(s));
   const row = (label: string, key: 'exposure' | 'contrast' | 'brightness' | 'saturation' | 'highlights' | 'shadows' | 'blackPoint' | 'whitePoint', range: [number, number], digits: number, snap: number) => (
     <ScrubSlider key={key} label={label} value={a[key]} range={range} snap={snap} format={signed(digits)} onChange={(v) => setAdjustments((q) => ({ ...q, [key]: v }))} testId={'adj-' + key} />
   );
@@ -440,7 +443,7 @@ const ZONES: { key: 'master' | 'shadows' | 'midtones' | 'highlights'; label: () 
 ];
 
 function ColorBalanceSection() {
-  const cb = useSession((s) => s.sidecar.adjustments.colorBalance);
+  const cb = useSession((s) => editingAdjustments(s).colorBalance);
   const [zone, setZone] = useState<(typeof ZONES)[number]['key']>('master');
   const z = cb[zone];
   const setZ = (patch: Partial<ColorZone>) => setAdjustments((q) => ({ ...q, colorBalance: { ...q.colorBalance, [zone]: { ...q.colorBalance[zone], ...patch } } }));

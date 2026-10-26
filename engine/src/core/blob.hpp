@@ -33,9 +33,11 @@ struct BlobEntry {
 };
 
 class Blob {
+    std::string resource_directory_;
 public:
     ~Blob();
     bool open(const std::string& path, std::string& error);
+    std::string resource_directory() const { return resource_directory_; }
     bool has(const std::string& name) const;
 
     // Widened to double, copied out. These are all small (the largest is the

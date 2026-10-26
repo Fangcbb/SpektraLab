@@ -47,9 +47,7 @@
 #include "pipeline.hpp"
 #include "print_lut.hpp"
 #include "setup_cache.hpp"
-#ifndef __APPLE__
-#include "windows_unported.hpp"
-#endif
+
 
 using namespace spk;
 
@@ -316,13 +314,7 @@ struct spk_engine {
         backend.set("host", Json(std::string("native")));
         backend.set("math_mode", Json(math_mode));
 #ifndef __APPLE__
-        // These upstream effects still require kernels or Apple services that
-        // have not been ported. Defaults stay usable; explicit requests fail.
-        Json unported = Json::array();
-        for (const char* feature : {"digital_intermediate", "scene_latitude_mapping",
-                                    "contrast_mask", "overscan", "date_imprint"})
-            unported.push(Json(std::string(feature)));
-        backend.set("unsupported_features", std::move(unported));
+        backend.set("unsupported_features", Json::array());
 #endif
         // Concurrent entry is safe: there is no numba here, and renders on
         // different tiers hold different locks.
@@ -1622,11 +1614,6 @@ spk_status spk_render_digital_intermediate(spk_session* session, spk_result* out
     std::lock_guard<std::mutex> guard(session->lock);
     g_error.clear();
     std::memset(out, 0, sizeof *out);
-#ifndef __APPLE__
-    if (out_json) *out_json = nullptr;
-    g_error = windows_unported_error(true, false, false, false, false);
-    return SPK_ERR_USER;
-#endif
     if (session->params.film.info.is_positive()) {
         g_error = "a slide film has no orange mask and no negative to reverse, so it has no "
                   "Digital Intermediate";
@@ -1704,14 +1691,6 @@ spk_status spk_set_params(spk_session* session, const char* params_delta_json, c
     std::lock_guard<std::mutex> guard(session->lock);
     spk_engine* engine = session->engine;
     const bool shoot = delta_touches_shoot(delta);
-#ifndef __APPLE__
-    // Reject before applying the delta, so a failed request cannot leave the
-    // session's params ahead of its still-valid, previously built pipeline.
-    if (const char* unported = windows_unported_delta_error(delta)) {
-        g_error = unported;
-        return SPK_ERR_USER;
-    }
-#endif
     const bool stock_change = delta.has("film_stock") || delta.has("print_stock");
     const bool rebuild = stock_change || delta_needs_rebuild(delta);
     // The live tier is the one piece of cached state a print-layer field can

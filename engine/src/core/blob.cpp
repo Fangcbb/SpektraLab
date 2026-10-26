@@ -60,6 +60,7 @@ Blob::~Blob() {
 }
 
 bool Blob::open(const std::string& path, std::string& error) {
+    resource_directory_ = path.substr(0, path.find_last_of("/\\"));
 #ifdef _WIN32
     // Use the same UTF-8/native-separator conversion as JSON and shader I/O.
     std::wstring wide;

@@ -30,6 +30,7 @@
 #include <vector>
 
 #include "image_io.hpp"
+#include "pair_io.hpp"
 #include "json.hpp"
 #include "output.hpp"
 #include "platform.hpp"
@@ -367,7 +368,7 @@ Json m_hello(const Request&) {
     for (const char* m : {"hello", "ping", "shutdown", "params_schema", "print_lut_catalog", "memory_report",
                           "probe", "thumbnail", "open", "redecode", "close", "set_params", "get_params", "solve", "render",
                           "scene_latitude", "overscan_geometry", "preview_stock_lut", "cancel", "progress",
-                          "export_image", "export_cube", "export_di", "write_image"})
+                          "export_image", "export_cube", "export_di", "write_image", "create_pair", "read_pair"})
         methods.push(str(m));
     r.set("methods", std::move(methods));
     return r;
@@ -505,7 +506,12 @@ Json m_open(const Request& q) {
     const DecodeOptions options = decode_options(q.params.at("decode"));
     Decoded d = decode_frame(path, options);
     std::string delta;
-    const Json& params = q.params.at("params");
+    Json params = q.params.at("params");
+    if(is_pair_path(path)) {
+        if(!params.is_object())params=Json::object();
+        params.set("overscan_pair",Json(true));params.set("overscan_format",str("135_half"));
+        params.set("auto_exposure",Json(false));
+    }
     if (params.is_object()) delta = params.dump();
     Json opened;
     double open_ms = 0;
@@ -527,6 +533,60 @@ Json m_open(const Request& q) {
                     std::to_string(d.frame.height) + " decode " + std::to_string(int(d.decode_ms)) + " ms, open " +
                     std::to_string(int(open_ms)) + " ms");
     return open_reply(*s, d, opened, open_ms);
+}
+
+Json m_read_pair(const Request& q) {
+    Json pair;std::string error;const auto path=utf8_path(require_string(q.params,"path"));
+    if(!is_pair_path(path))throw HostError{"bad_request","expected a .spektrapair file"};
+    if(!read_pair(path,pair,error))throw HostError{"io_error",error};return pair;
+}
+Json m_create_pair(const Request& q) {
+    const auto path=utf8_path(require_string(q.params,"path"));
+    if(!is_pair_path(path))throw HostError{"bad_request","expected a .spektrapair destination"};
+    Json pair=q.params.at("pair");if(!pair.is_object())throw HostError{"bad_request","pair must be an object"};
+    if(pair.has("schemaVersion") && pair.at("schemaVersion").as_double()!=1)throw HostError{"bad_request","unsupported half-frame pair schema"};
+    pair.set("schemaVersion",number(1));
+    bool present=false;
+    for(const char* side:{"left","right"}) {
+        Json hole=pair.at(side);if(!hole.is_object())continue;present=true;
+        auto source=utf8_path(require_string(hole,"path"));if(!source.is_absolute())source=path.parent_path()/source;
+        if(is_pair_path(source))throw HostError{"bad_request","pairs cannot contain pairs"};
+        Probe probe;std::string error;
+        if(!probe_file(source,probe,error))throw HostError{"not_found",error};
+        if(hole.at("autoExposure").as_bool(true) && !hole.at("meteredEV").is_number()) {
+            DecodeOptions options;const auto& decode=hole.at("decode");
+            if(!decode.at("whiteBalance").as_string().empty() && decode.at("whiteBalance").as_string()!="As Shot") {
+                options.temperature_k=decode.at("temperature").as_double(5500);options.tint=decode.at("tint").as_double();
+            }
+            auto decoded=decode_frame(source,options);Json params=q.params.at("params");
+            if(!params.is_object())params=Json::object();
+            params.set("overscan_active",Json(false));params.set("date_imprint_active",Json(false));
+            params.set("overscan_pair",Json(false));params.set("auto_exposure",Json(true));
+            const auto& geometry=hole.at("geometry");const auto& crop=geometry.at("crop");
+            params.set("geometry_crop_x",number(crop.at("x").as_double()));
+            params.set("geometry_crop_y",number(crop.at("y").as_double()));
+            params.set("geometry_crop_w",number(crop.at("width").as_double(1)));
+            params.set("geometry_crop_h",number(crop.at("height").as_double(1)));
+            params.set("geometry_rotation_deg",number(geometry.at("angle").as_double()));
+            params.set("geometry_quarter_turns",number(geometry.at("quarterTurns").as_double()));
+            params.set("geometry_flip_h",Json(geometry.at("flipH").as_bool()));
+            params.set("geometry_flip_v",Json(geometry.at("flipV").as_bool()));
+            if(hole.at("meterMethod").is_string())params.set("auto_exposure_method",hole.at("meterMethod"));
+            Json opened;double duration=0;
+            auto* single=engine_open(decoded.frame,params.dump(),opened,duration);char* answer=nullptr;
+            const auto status=spk_solve(single,"exposure",&answer);
+            const auto message=std::string(spk_last_error(g.engine));spk_session_release(single);
+            if(status!=SPK_OK){if(answer)spk_string_free(answer);throw HostError{"engine_error",message};}
+            const auto meter=take_json(answer);
+            hole.set("meteredEV",meter.at("solved_params").at("exposure_compensation_ev"));
+        }
+        hole.set("metadata",metadata_json(probe.metadata));
+        pair.set(side,std::move(hole));
+    }
+    if(!present)throw HostError{"bad_request","select at least one source photo"};
+    const auto text=pair.dump();std::vector<uint8_t> bytes(text.begin(),text.end());std::string error;
+    if(!write_file_atomic(path,bytes,q.params.at("overwrite").as_bool(false),error))throw HostError{"io_error",error};
+    return pair;
 }
 
 // R2: decode the session's file again with other decode settings, keeping its
@@ -612,6 +672,77 @@ std::string tier_of(const Json& params, const char* fallback) {
     return tier;
 }
 
+// A pair shares one negative. Different enlarger settings only reprint it;
+// the original parameters are restored even when a layer fails.
+Json pair_prints(Session& session,const std::string& tier,const Json& request,
+                 const spk_result& base,std::vector<uint8_t>& pixels) {
+    if(!is_pair_path(utf8_path(session.path)))return Json::array();
+    Json pair;std::string error;
+    if(!read_pair(utf8_path(session.path),pair,error))throw HostError{"io_error",error};
+    char* geometry=nullptr;
+    auto status=spk_overscan_geometry(session.handle,&geometry);
+    if(status!=SPK_OK)engine_fail(status,"pair geometry");
+    const auto geometry_json=take_json(geometry);
+    Json gates=geometry_json.at("gates");
+    if(!geometry_json.at("valid").as_bool() || gates.items().size()!=2) {
+        gates=Json::array();
+        const double gap=pair.at("onStrip").as_bool()?1:std::clamp(pair.at("spacingMM").as_double(1),.5,2.0);
+        const bool vertical=pair.at("turned").as_bool();
+        for(int side=0;side<2;++side) {
+            const double start=side*(18+gap)/(36+gap),end=(side*(18+gap)+18)/(36+gap);
+            Json quad=Json::array();
+            for(double v:vertical?std::vector<double>{0,start,1,start,1,end,0,end}:
+                                  std::vector<double>{start,0,end,0,end,1,start,1})quad.push(number(v));
+            gates.push(std::move(quad));
+        }
+    }
+    if(gates.items().size()!=2)return gates;
+    // Geometry lists strip gates in exposure order; sort as the displayed pair.
+    const bool vertical=pair.at("turned").as_bool();
+    auto centre=[&](const Json& quad){double sum=0;for(int i=vertical?1:0;i<8;i+=2)sum+=quad.items()[i].as_double();return sum;};
+    if(centre(gates.items()[0])>centre(gates.items()[1]))std::swap(gates.items()[0],gates.items()[1]);
+    const auto& a=pair.at("left").at("print");const auto& b=pair.at("right").at("print");
+    if(!a.is_object() && !b.is_object())return gates;
+    char* original_text=nullptr;status=spk_get_params(session.handle,&original_text);
+    if(status!=SPK_OK)engine_fail(status,"pair print parameters");
+    const auto original=take_json(original_text);
+    Json restore=Json::object();
+    for(const char* key:{"print_exposure","y_filter_shift","m_filter_shift","preflash_exposure"})restore.set(key,original.at(key));
+    struct Restore {
+        spk_session* session;std::string params;
+        ~Restore(){char* reply=nullptr;spk_set_params(session,params.c_str(),&reply);if(reply)spk_string_free(reply);}
+    } guard{session.handle,restore.dump()};
+    const size_t bpp=request.at("format").as_string()=="rgba16"?8:4;
+    for(int side=0;side<2;++side) {
+        const auto& trim=side?b:a;if(!trim.is_object())continue;
+        Json delta=restore;
+        delta.set("print_exposure",number(std::clamp(std::exp2(-trim.at("brightnessStops").as_double()),.05,20.0)));
+        delta.set("y_filter_shift",number(trim.at("yFilterShift").as_double()));
+        delta.set("m_filter_shift",number(trim.at("mFilterShift").as_double()));
+        delta.set("preflash_exposure",number(trim.at("preflashExposure").as_double()));
+        char* reply=nullptr;status=spk_set_params(session.handle,delta.dump().c_str(),&reply);if(reply)spk_string_free(reply);
+        if(status!=SPK_OK)engine_fail(status,"pair print parameters");
+        Result layer;status=spk_reprint(session.handle,tier.c_str(),&layer.r);
+        if(status!=SPK_OK)engine_fail(status,"pair reprint");
+        if(layer.r.width!=base.width || layer.r.height!=base.height)throw HostError{"engine_error","pair print changed canvas dimensions"};
+        Json info;std::vector<uint8_t> layer_pixels;
+        package_pixels(layer.r,session.output_space,request,info,layer_pixels);
+        const auto& q=gates.items()[side].items();
+        double xmin=1,xmax=0,ymin=1,ymax=0;
+        for(int i=0;i<8;i+=2){xmin=std::min(xmin,q[i].as_double());xmax=std::max(xmax,q[i].as_double());ymin=std::min(ymin,q[i+1].as_double());ymax=std::max(ymax,q[i+1].as_double());}
+        for(uint32_t y=uint32_t(std::clamp(std::floor(ymin*base.height),0.0,double(base.height)));y<std::min(double(base.height),std::ceil(ymax*base.height));++y)
+        for(uint32_t x=uint32_t(std::clamp(std::floor(xmin*base.width),0.0,double(base.width)));x<std::min(double(base.width),std::ceil(xmax*base.width));++x) {
+            const double px=(x+.5)/base.width,py=(y+.5)/base.height;
+            bool pos=false,neg=false;
+            for(int i=0;i<4;++i){const int j=(i+1)%4;const double cross=(q[j*2].as_double()-q[i*2].as_double())*(py-q[i*2+1].as_double())-(q[j*2+1].as_double()-q[i*2+1].as_double())*(px-q[i*2].as_double());pos|=cross>1e-10;neg|=cross< -1e-10;}
+            if(pos&&neg)continue;
+            const size_t offset=(size_t(y)*base.width+x)*bpp;
+            std::memcpy(pixels.data()+offset,layer_pixels.data()+offset,bpp);
+        }
+    }
+    return gates;
+}
+
 Json m_render(const Request& q, std::vector<uint8_t>& payload) {
     auto s = find_session(q.params);
     const std::string tier = tier_of(q.params, "preview");
@@ -638,7 +769,9 @@ Json m_render(const Request& q, std::vector<uint8_t>& payload) {
     const auto t1 = Clock::now();
     Json image;
     package_pixels(result.r, s->output_space, q.params, image, payload);
+    Json gates=pair_prints(*s,tier,q.params,result.r,payload);
     Json r = Json::object();
+    if(!gates.items().empty())r.set("pair_gates",std::move(gates));
     r.set("image", std::move(image));
     r.set("tier", str(tier));
     r.set("reprinted", Json(reprinted));
@@ -786,7 +919,14 @@ Json m_export_image(const Request& q) {
     const OutputTransform& t = transform(s->output_space, space);
     std::vector<float> lin;
     uint32_t w = result.r.width, h = result.r.height;
-    t.to_linear(result.r.rgba16, w, h, result.r.row_stride_px ? result.r.row_stride_px : w, lin);
+    if(is_pair_path(utf8_path(s->path))) {
+        Json raw=Json::object(),info;raw.set("format",str("rgba16"));
+        std::vector<uint8_t> pixels;package_pixels(result.r,s->output_space,raw,info,pixels);
+        pair_prints(*s,"full",raw,result.r,pixels);
+        std::vector<uint16_t> codes(pixels.size()/2);
+        for(size_t i=0;i<codes.size();++i)codes[i]=uint16_t(pixels[2*i])|(uint16_t(pixels[2*i+1])<<8);
+        t.to_linear(codes.data(),w,h,w,lin);
+    }else t.to_linear(result.r.rgba16, w, h, result.r.row_stride_px ? result.r.row_stride_px : w, lin);
     shrink_to(lin, w, h, long_edge);
     std::vector<uint8_t> icc, bytes;
     std::string error;
@@ -900,6 +1040,8 @@ void dispatch(const Request& q) {
     else if (m == "probe") result = m_probe(q);
     else if (m == "thumbnail") result = m_thumbnail(q, payload);
     else if (m == "open") result = m_open(q);
+    else if (m == "read_pair") result = m_read_pair(q);
+    else if (m == "create_pair") result = m_create_pair(q);
     else if (m == "close") result = m_close(q);
     else if (m == "redecode") result = m_redecode(q);
     else if (m == "set_params") result = m_set_params(q);

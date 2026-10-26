@@ -9,6 +9,8 @@ vi.mock('../host/client', () => {
     code = 'internal';
   }
   const h = {
+    transport:{request:vi.fn(async (_method:string,params:Record<string,unknown>)=>{calls.push('pair:'+String(params.path));return {result:params.pair};})},
+    close:vi.fn(async()=>{}),
     setParams: vi.fn(async () => {
       calls.push('set_params');
       return {};
@@ -30,10 +32,11 @@ vi.mock('../platform', () => ({
   dirName: (p: string) => p,
 }));
 
-import { recomputeFilmFormat, requestPrint, requestFullPrint, sessionStore, setDecode, setGeometry, setParams, undo } from './session';
+import { recomputeFilmFormat, requestPrint, requestFullPrint, sessionStore, setDecode, setGeometry, setParams, undo, updatePairHole, flushPairEdits } from './session';
 import { host } from '../host/client';
 import type { HelloResult } from '@shared/protocol';
 import { settingsStore } from './settings';
+import {normalizePair,type HalfFramePair} from '@shared/pair';
 import { newSidecar } from '@shared/sidecar';
 
 // Undo steps coalesce within 500 ms; each case starts well past the last one.
@@ -43,6 +46,7 @@ beforeEach(() => {
   vi.spyOn(performance, 'now').mockReturnValue(clock);
   calls.length = 0;
   sessionStore.setState({
+    pair:null,pairFocus:'film',
     selection: '/x/a.cr2',
     engineSession: 's1',
     nativeSize: { width: 6000, height: 4000 },
@@ -143,5 +147,26 @@ describe('white balance at decode (R2)', () => {
     setDecode((d) => ({ ...d, whiteBalance: 'Custom', temperature: 3200 }));
     await vi.waitFor(() => expect(calls).toContain('render:live'));
     expect(calls.some((c) => c.startsWith('redecode'))).toBe(false);
+  });
+});
+
+describe('pair edit history and persistence',()=>{
+  const pair=normalizePair({schemaVersion:1,folder:'/x',left:{path:'/x/left.jpg'},right:null} as HalfFramePair);
+  it('undo restores the pair recipe as well as global editing settings',async()=>{
+    vi.useFakeTimers({toFake:['setTimeout','clearTimeout']});
+    sessionStore.setState({pair,selection:'/x/two.spektrapair',hostState:{phase:'starting'}});
+    updatePairHole('left',{exposureEV:1});
+    expect(sessionStore.getState().pair?.left?.exposureEV).toBe(1);
+    undo();expect(sessionStore.getState().pair?.left?.exposureEV).toBe(0);
+    await flushPairEdits();
+  });
+  it('flush writes the captured file even if the selection has moved',async()=>{
+    vi.useFakeTimers({toFake:['setTimeout','clearTimeout']});
+    sessionStore.setState({pair,selection:'/x/two.spektrapair'});
+    updatePairHole('left',{exposureEV:2});
+    sessionStore.setState({selection:'/x/another.jpg',pair:null});
+    await flushPairEdits();
+    expect(calls).toContain('pair:/x/two.spektrapair');
+    expect(calls).not.toContain('pair:/x/another.jpg');
   });
 });

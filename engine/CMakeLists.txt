@@ -45,14 +45,10 @@ add_library(spektralab_pipeline OBJECT
     src/pipeline/engine.cpp
     src/pipeline/pipeline.cpp
     src/pipeline/scene_latitude.cpp
+    src/pipeline/overscan.cpp
+    src/pipeline/contrast_mask.cpp
 )
 set_target_properties(spektralab_pipeline PROPERTIES POSITION_INDEPENDENT_CODE ON)
-if(APPLE)
-    target_sources(spektralab_pipeline PRIVATE
-        src/pipeline/contrast_mask.cpp src/pipeline/overscan.cpp)
-else()
-    target_sources(spektralab_pipeline PRIVATE src/pipeline/windows_unported.cpp)
-endif()
 target_link_libraries(spektralab_pipeline PRIVATE spektralab_core)
 target_include_directories(spektralab_pipeline PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
@@ -112,6 +108,8 @@ if(NOT APPLE)
         set(vulkan_resource_dir "${CMAKE_CURRENT_BINARY_DIR}/resources")
         set(vulkan_shader_dir "${vulkan_resource_dir}/vulkan")
         set(SPEKTRALAB_VULKAN_KERNELS
+            spk_scene_latitude spk_mask_reduce spk_mask_epilogue spk_di_encode
+            spk_overscan_canvas spk_overscan_add_mask spk_overscan_film_present spk_overscan_light
             spk_math_probe spk_take_rgb spk_matmul3 spk_stride_sample
             spk_affine3 spk_tc_b spk_lut2d_cubic spk_sep_fir_acc spk_iir_df_acc
             spk_lincomb3 spk_log10_guarded spk_curves
@@ -142,6 +140,10 @@ if(NOT APPLE)
         add_custom_target(spektralab_vulkan_resources
             COMMAND "${CMAKE_COMMAND}" -E copy_directory
                     "${CMAKE_CURRENT_SOURCE_DIR}/resources" "${vulkan_resource_dir}"
+            COMMAND "${CMAKE_COMMAND}" -E copy_directory
+                    "${CMAKE_CURRENT_SOURCE_DIR}/resources_product/profiles" "${vulkan_resource_dir}/profiles"
+            COMMAND "${CMAKE_COMMAND}" -E copy
+                    "${CMAKE_CURRENT_SOURCE_DIR}/resources_product/NOTICE.md" "${vulkan_resource_dir}/PRODUCT_PROFILES_NOTICE.md"
             DEPENDS ${vulkan_spirv}
             VERBATIM)
 
@@ -252,7 +254,7 @@ if(NOT APPLE)
             add_test(NAME spk_vulkan_smoke
                 COMMAND spk_vulkan_smoke "${vulkan_resource_dir}")
 
-            foreach(probe grain pointwise resample transfer geometry lut_di)
+            foreach(probe grain pointwise resample transfer geometry lut_di imaging)
                 add_executable(spk_vulkan_${probe} tests/gpu_vulkan_${probe}.cpp)
                 target_include_directories(spk_vulkan_${probe} PRIVATE
                     "${CMAKE_CURRENT_SOURCE_DIR}/include"

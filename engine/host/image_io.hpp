@@ -34,7 +34,7 @@ struct Metadata {
     std::optional<double> as_shot_temperature_k, as_shot_tint;
 };
 
-enum class FileKind { Raw, Tiff, Jpeg, Png, Unknown };
+enum class FileKind { Raw, Tiff, Jpeg, Png, Pair, Unknown };
 const char* kind_name(FileKind kind);
 FileKind sniff_kind(const std::filesystem::path& path);
 

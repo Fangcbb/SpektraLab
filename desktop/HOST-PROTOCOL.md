@@ -91,8 +91,10 @@ working space the pixels pass through (the engine already compressed into it).
 ### Files
 | method | params | result |
 |---|---|---|
-| `probe` | `{path}` | `{kind: "raw"\|"tiff"\|"jpeg"\|"png", width, height, metadata}` (no full decode) |
+| `probe` | `{path}` | `{kind: "raw"\|"tiff"\|"jpeg"\|"png"\|"pair", width, height, metadata}` (no full decode) |
 | `thumbnail` | `{path, long_edge}` | `{image, source: "embedded"\|"half-size decode"\|"decode", orientation_applied: true}` + rgba8 sRGB payload, **already turned to the camera's orientation** (embedded RAW preview when present, else a fast decode) |
+| `read_pair` | `{path}` | `.spektrapair` schema-1 JSON; unknown fields preserved |
+| `create_pair` | `{path, pair, params?: <metering film params>, overwrite?: false}` | saved pair JSON, with source metadata and `meteredEV` per auto-exposed hole; rejects nested pairs, missing/all-empty sources and implicit overwrite |
 
 `metadata`: `{make?, model?, lens?, iso?, shutter_s?, aperture?, focal_mm?, datetime_original?, orientation, as_shot?: {temperature_k, tint}}` — feeds the date back and the info readouts. `datetime_original` is ISO-8601 local time without a zone (`2026-09-14T17:03:22`), from EXIF `DateTimeOriginal`. `orientation` is the EXIF value (1–8) of the file as stored; `probe`'s `width`/`height` are **as displayed** (orientation applied), and so is every frame the host hands the engine.
 
@@ -105,6 +107,20 @@ difference 0.01/255). RAW and `compatible16` only; on a raster or in
 `headroom` mode it is `unsupported`. `lens_correction: true` is `unsupported`
 (LibRaw carries no lens profiles).
 
+Windows JPEG uses WIC, requesting native decoder scaling for thumbnails before
+float expansion. ICC/TRC conversion remains in the common image pipeline;
+WIC failures use stb. `SPEKTRALAB_DISABLE_WIC=1` forces that fallback.
+
+A `.spektrapair` contains `schemaVersion:1`, `folder`, nullable `left`/`right`,
+`onStrip`, `turned`, `spacingMM`. Each hole has `path` (absolute or relative to
+the pair file), `geometry`, `placement:{scale,x,y,quarterTurns}`, `decode`
+(sidecar shape), `autoExposure`, optional `meterMethod`/`meteredEV`, `exposureEV`,
+optional `print:{brightnessStops,yFilterShift,mFilterShift,preflashExposure}`,
+`adjustments` and frame/film scope notes. Print layers are cut into normalized
+`pair_gates` in both `render` and `export_image`; the negative and original
+print parameters are retained. Layer-2 grades remain the app's responsibility
+(the export uses `write_image`). A pair never modifies either source photo.
+
 What a file is decoded *to* (the engine develops linear ProPhoto RGB, top row first; AGENTS.md traps 11–12): RAW through LibRaw; TIFF/JPEG/PNG through their embedded matrix/TRC ICC profile (D50 colorants to XYZ to ProPhoto, as ColorSync does); without a profile, 8-bit files are sRGB and 16-bit/float TIFFs are linear ProPhoto (the macOS decoder's rule for an untagged deep TIFF). TIFF: 8/16-bit integer and 32-bit float, RGB or grey, uncompressed/LZW/deflate/PackBits, strips or tiles; not BigTIFF, CMYK or LUT-based ICC profiles (those fall back to sRGB with a log line).
 
 ### Sessions (one per open frame)
@@ -116,7 +132,7 @@ What a file is decoded *to* (the engine develops linear ProPhoto RGB, top row fi
 | `set_params` | `{session, delta: {...}}` | `{params}` (the delta is applied transactionally: on error the session is unchanged) |
 | `get_params` | `{session}` | `{params}` |
 | `solve` | `{session, target}` | `<spk_solve JSON>` |
-| `render` | `{session, tier: "live"\|"preview"\|"full", reprint?: bool, format: "rgba8"\|"rgba16", display?: "srgb"\|"display-p3"\|"prophoto", progress_id?}` | `{image, tier, reprinted: bool, negative_was_cached: bool, engine_progress_id, timings_ms: {engine, render, transform}}` + pixels |
+| `render` | `{session, tier: "live"\|"preview"\|"full", reprint?: bool, format: "rgba8"\|"rgba16", display?: "srgb"\|"display-p3"\|"prophoto", progress_id?}` | `{image, tier, pair_gates?: [[x0,y0,x1,y1,x2,y2,x3,y3],...], reprinted: bool, negative_was_cached: bool, engine_progress_id, timings_ms: {engine, render, transform}}` + pixels |
 | `scene_latitude` | `{session, request: {...}}` | `<spk_scene_latitude JSON>` |
 | `overscan_geometry` | `{session}` | `<spk_overscan_geometry JSON>` |
 | `preview_stock_lut` | `{session, print_stock, tier?: "preview", format, display?}` | `{image, lut: <spk_preview_stock_lut JSON>}` + pixels; the LUT's own output space (catalog `output_color_space`) is the source of the transform |

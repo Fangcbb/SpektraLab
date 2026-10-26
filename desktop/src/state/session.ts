@@ -27,14 +27,20 @@ import {
   jsonEqual,
   clamp,
 } from '@shared/params';
+import { type HalfFramePair, type PairHole, isPair, normalizePair } from '@shared/pair';
+import { shootingParams } from '@shared/shootingData';
+import { cutsFrame, fitFilmGate, geometryWire } from '@shared/filmGeometry';
 import { type Adjustments, ADJUSTMENTS_DEFAULT } from '@shared/adjustments';
 import { type Geometry, GEOMETRY_DEFAULT, outputSize } from '@shared/geometry';
 import { type DecodeSettings, type Sidecar, decodeSidecar, encodeSidecar, newSidecar } from '@shared/sidecar';
 import { decodeWire, isRawPath, modeOf } from '@shared/whiteBalance';
 import { type ClipboardGroup, type SettingsClip, CLIPBOARD_GROUPS, applyClip, clipChanges } from '@shared/clipboard';
 import { EMPTY_CATALOG, type StockCatalog, loadCatalog } from '@shared/stocks';
+import { pixelsInWorker } from '../canvas/pixelWorker';
+import { SRGB_MID_GREY } from '@shared/adjustments';
+import type { RenderReply } from '../host/client';
 import { HostCallError, host } from '../host/client';
-import { type FileEntry, baseName, dirName, platform } from '../platform';
+import { type FileEntry, baseName, dirName, joinPath, platform } from '../platform';
 import { settingsStore } from './settings';
 import { frameImages, makeThumbFromPrint } from './frames';
 import { thumbs } from './thumbs';
@@ -52,6 +58,7 @@ export interface ViewState {
 }
 
 export interface UndoEntry {
+  pair?: HalfFramePair | null;
   params: FilmParams;
   adjustments: Adjustments;
   geometry: Geometry;
@@ -76,6 +83,8 @@ export interface SessionState {
   sidecar: Sidecar;
   engineSession: string | null;
   nativeSize: { width: number; height: number } | null;
+  pair: HalfFramePair | null;
+  pairFocus:'film'|'left'|'right';
   metadata: FileMetadata | null;
   /** The open frame's kind as the host decoded it (`raw`, `tiff`, …); null until it lands. */
   frameKind: string | null;
@@ -122,6 +131,8 @@ const INITIAL: SessionState = {
   sidecar: newSidecar(),
   engineSession: null,
   nativeSize: null,
+  pair: null,
+  pairFocus:'film',
   metadata: null,
   frameKind: null,
   redecoding: false,
@@ -160,6 +171,7 @@ const set = (p: Partial<SessionState>) => sessionStore.setState(p);
 // by default; optional idle rendering is dropped if anything moved meanwhile.
 
 let sentParams: FilmParams | null = null;
+let sentGeometry = "";
 let wantedGen = 0;
 let inFlight = false;
 let fullTimer: ReturnType<typeof setTimeout> | null = null;
@@ -182,8 +194,14 @@ function previewEdge() {
   return settingsStore.getState().previewLongEdge;
 }
 
+function shotParams(p:FilmParams) {
+  const s=get();p=shootingParams(p,s.metadata);
+  if(s.pair){const second=shootingParams(p,s.pair.right?.metadata??null).dateBack.text;p={...p,dateBack:{...p.dateBack,textB:second}};}
+  return p;
+}
 function wireParams(p: FilmParams) {
-  return { ...fullDelta(p, get().gate), preview_long_edge: previewEdge() };
+  p=shotParams(p);
+  return { ...fullDelta(p, get().gate), ...geometryWire(p,get().sidecar.geometry), preview_long_edge: previewEdge() };
 }
 
 /**
@@ -200,6 +218,39 @@ function noteAsShot() {
   scheduleSave();
 }
 
+async function gradePairRender(image:RenderReply,s:SessionState):Promise<RenderReply> {
+  if(!s.pair || !(s.pair.left?.adjustments || s.pair.right?.adjustments))return image;
+  const data=await pixelsInWorker({src:image.data,srcSize:image,out:image,geometry:GEOMETRY_DEFAULT,
+    adjustments:s.sidecar.adjustments,midGrey:SRGB_MID_GREY,
+    pair:{gates:image.pairGates??[],adjustments:[s.pair.left?.adjustments??null,s.pair.right?.adjustments??null]}});
+  return {...image,data:data as Uint8Array,bakedAdjustments:true};
+}
+export function editingAdjustments(s:SessionState):Adjustments {
+  return (s.pairFocus!=='film'?s.pair?.[s.pairFocus]?.adjustments:null)??s.sidecar.adjustments;
+}
+export function editingParams(s:SessionState):FilmParams {
+  const own=s.pairFocus!=='film'?s.pair?.[s.pairFocus]?.print:null;
+  return own?{...s.sidecar.params,printBrightnessStops:own.brightnessStops,yFilterShift:own.yFilterShift,mFilterShift:own.mFilterShift,preflashExposure:own.preflashExposure}:s.sidecar.params;
+}
+function trimOf(p:FilmParams){return {brightnessStops:p.printBrightnessStops,yFilterShift:p.yFilterShift,mFilterShift:p.mFilterShift,preflashExposure:p.preflashExposure};}
+export function setEnlarger(fn:(p:FilmParams)=>FilmParams) {
+  const s=get();const side=s.pairFocus;
+  if(!s.pair || side==='film' || !s.pair[side]){setParams(fn);return;}
+  const before=editingParams(s),next=fn(before),film=trimOf(s.sidecar.params);
+  const patch:Partial<HalfFramePair>={[side]:{...s.pair[side]!,print:trimOf(next)}};
+  if((s.pair[side]!.printScope??'film')==='film') {
+    const other=side==='left'?'right':'left';
+    if(s.pair[other] && !s.pair[other]!.print)patch[other]={...s.pair[other]!,print:film};
+    const params={...s.sidecar.params,
+      printBrightnessStops:clamp(s.sidecar.params.printBrightnessStops+next.printBrightnessStops-before.printBrightnessStops,-3,3),
+      yFilterShift:clamp(s.sidecar.params.yFilterShift+next.yFilterShift-before.yFilterShift,-1,1),
+      mFilterShift:clamp(s.sidecar.params.mFilterShift+next.mFilterShift-before.mFilterShift,-1,1),
+      preflashExposure:clamp(s.sidecar.params.preflashExposure+next.preflashExposure-before.preflashExposure,0,.03)};
+    pushUndo();set({sidecar:{...s.sidecar,params}});scheduleSave();
+  }
+  updatePair(patch);
+}
+
 export async function requestPrint(): Promise<boolean> {
   wantedGen++;
   if (fullTimer) clearTimeout(fullTimer);
@@ -212,14 +263,18 @@ export async function requestPrint(): Promise<boolean> {
       const gen = wantedGen;
       const s = get();
       if (s.engineSession !== sid) return false;
-      const want = s.sidecar.params;
+      const want = shotParams(s.sidecar.params);
       const d = sentParams ? paramsDelta(want, sentParams, s.gate) : { delta: wireParams(want), layers: new Set(['shoot']) };
+      const framing=geometryWire(want,s.sidecar.geometry);
+      const framingKey=JSON.stringify(framing);
+      if(framingKey!==sentGeometry) { Object.assign(d.delta,framing);d.layers.add('shoot'); }
       if (Object.keys(d.delta).length) {
         await host().setParams(sid, d.delta);
         sentParams = want;
+        sentGeometry = framingKey;
       }
       const reprint = d.layers.size === 1 && d.layers.has('print');
-      const r = await host().render(sid, 'live', { reprint });
+      const r = await gradePairRender(await host().render(sid, 'live', { reprint }),s);
       if (get().engineSession !== sid) return false;
       frameImages.print = r;
       set({ imageVersion: get().imageVersion + 1, badge: 'preview', status: '' });
@@ -230,6 +285,7 @@ export async function requestPrint(): Promise<boolean> {
     return false;
   } finally {
     inFlight = false;
+    if(get().engineSession && get().engineSession!==sid)queueMicrotask(()=>void requestPrint());
   }
   scheduleFull();
   return true;
@@ -265,7 +321,7 @@ async function renderFull(gen: number) {
   inFlight = true;
   try {
     const t0 = performance.now();
-    const r = await host().render(sid, 'full');
+    const r = await gradePairRender(await host().render(sid, 'full'),s);
     // Dropped when the generation, selection or session moved (ARCHITECTURE §7.3).
     if (gen !== wantedGen || get().engineSession !== sid) return;
     frameImages.print = r;
@@ -296,7 +352,7 @@ async function refreshThumb() {
   if (!s.selection || !frameImages.print) return;
   const url = await makeThumbFromPrint(frameImages.print);
   if (url && get().selection === s.selection) {
-    thumbs.setPrint(s.selection, url);
+    thumbs.setPrint(s.selection, url,cutsFrame(s.sidecar.params));
     set({ thumbVersion: get().thumbVersion + 1 });
   }
 }
@@ -328,7 +384,7 @@ function pushUndo() {
   if (now - lastUndoAt < 500) return;
   lastUndoAt = now;
   const sc = get().sidecar;
-  const undo = [...get().undo, { params: sc.params, adjustments: sc.adjustments, geometry: sc.geometry, decode: sc.decode }].slice(-60);
+  const undo = [...get().undo, { params: sc.params, adjustments: sc.adjustments, geometry: sc.geometry, decode: sc.decode, pair: get().pair }].slice(-60);
   set({ undo, redo: [] });
 }
 
@@ -339,30 +395,40 @@ export function setParams(fn: (p: FilmParams) => FilmParams) {
   const next = fn(s.sidecar.params);
   if (jsonEqual(next, s.sidecar.params)) return;
   pushUndo();
-  set({ sidecar: { ...get().sidecar, params: next, state: get().sidecar.state === 'processed' ? 'stale' : get().sidecar.state } });
+  const geometry=next.filmEdge.active && (!s.sidecar.params.filmEdge.active || next.filmEdge.format!==s.sidecar.params.filmEdge.format) ? fitFilmGate(s.sidecar.geometry,s.nativeSize,next.filmEdge.format,next.filmEdge.pair) : s.sidecar.geometry;
+  set({ sidecar: { ...get().sidecar, params: next, geometry, state: get().sidecar.state === 'processed' ? 'stale' : get().sidecar.state } });
   scheduleSave();
+  if(s.pair && next.filmEdge.active!==s.pair.onStrip) { updatePair({onStrip:next.filmEdge.active});return; }
+  if(s.pair && (next.filmStock!==s.sidecar.params.filmStock || next.autoExposureMethod!==s.sidecar.params.autoExposureMethod)) {
+    updatePair({left:s.pair.left?{...s.pair.left,meteredEV:null}:null,right:s.pair.right?{...s.pair.right,meteredEV:null}:null});return;
+  }
   void requestPrint();
 }
 
 /** A Layer 2 edit: one draw. */
 export function setAdjustments(fn: (a: Adjustments) => Adjustments) {
   const s = get();
-  const next = fn(s.sidecar.adjustments);
-  if (jsonEqual(next, s.sidecar.adjustments)) return;
+  const current=editingAdjustments(s);
+  const next = fn(current);
+  if (jsonEqual(next, current)) return;
+  if(s.pair && s.pairFocus!=='film' && s.pair[s.pairFocus]){updatePairHole(s.pairFocus,{adjustments:next});return;}
   pushUndo();
   set({ sidecar: { ...s.sidecar, adjustments: next } });
   scheduleSave();
+  if(s.pair && (s.pair.left?.adjustments || s.pair.right?.adjustments))void requestPrint();
 }
 
 /** A geometry edit: one draw (and the film format, when a crop re-maps it). */
 export function setGeometry(fn: (g: Geometry) => Geometry, opts: { coalesce?: boolean } = {}) {
   const s = get();
-  const next = fn(s.sidecar.geometry);
+  const candidate = fn(s.sidecar.geometry);
+  const next=s.sidecar.params.filmEdge.active ? fitFilmGate(candidate,s.nativeSize,s.sidecar.params.filmEdge.format,s.sidecar.params.filmEdge.pair) : candidate;
   if (jsonEqual(next, s.sidecar.geometry)) return;
   if (!opts.coalesce) pushUndo();
   set({ sidecar: { ...s.sidecar, geometry: next }, savedGeometry: s.selection ? { ...s.savedGeometry, [s.selection]: next } : s.savedGeometry });
   scheduleSave();
   if (settingsStore.getState().recalculateEffectsAfterCrop) recomputeFilmFormat();
+  if(cutsFrame(get().sidecar.params)) void requestPrint();
 }
 
 /**
@@ -440,6 +506,7 @@ function restore(e: UndoEntry) {
   const decodeMoved = !jsonEqual(e.decode, s.sidecar.decode);
   set({ sidecar: { ...s.sidecar, params: e.params, adjustments: e.adjustments, geometry: e.geometry, decode: e.decode } });
   scheduleSave();
+  if(e.pair && s.selection) {set({pair:e.pair});queuePairSave(s.selection,e.pair);return;}
   if (decodeMoved) scheduleRedecode();
   else void requestPrint();
 }
@@ -449,7 +516,7 @@ export function undo() {
   if (s.batchExporting || !s.selection) return;
   const prev = s.undo[s.undo.length - 1];
   if (!prev) return;
-  const cur = { params: s.sidecar.params, adjustments: s.sidecar.adjustments, geometry: s.sidecar.geometry, decode: s.sidecar.decode };
+  const cur = { params: s.sidecar.params, adjustments: s.sidecar.adjustments, geometry: s.sidecar.geometry, decode: s.sidecar.decode,pair:s.pair };
   set({ undo: s.undo.slice(0, -1), redo: [...s.redo, cur] });
   lastUndoAt = 0;
   restore(prev);
@@ -461,7 +528,7 @@ export function redo() {
   if (s.batchExporting || !s.selection) return;
   const next = s.redo[s.redo.length - 1];
   if (!next) return;
-  const cur = { params: s.sidecar.params, adjustments: s.sidecar.adjustments, geometry: s.sidecar.geometry, decode: s.sidecar.decode };
+  const cur = { params: s.sidecar.params, adjustments: s.sidecar.adjustments, geometry: s.sidecar.geometry, decode: s.sidecar.decode,pair:s.pair };
   set({ redo: s.redo.slice(0, -1), undo: [...s.undo, cur] });
   lastUndoAt = 0;
   restore(next);
@@ -639,6 +706,7 @@ export function selectRelative(delta: number) {
  */
 export async function select(path: string): Promise<void> {
   if (path === get().selection && get().engineSession) return;
+  await flushPairEdits();
   const gen = ++openGen;
   await flushSave();
   await closeEngineSession();
@@ -652,6 +720,8 @@ export async function select(path: string): Promise<void> {
     picked: get().picked.includes(path) ? get().picked : [path],
     sidecar,
     nativeSize: null,
+  pair: null,
+  pairFocus:'film',
     metadata: null,
     frameKind: null,
     badge: null,
@@ -685,6 +755,15 @@ async function develop(path: string, gen: number) {
   set({ developing: true });
   try {
     const t0 = performance.now();
+    if(isPair(path)) {
+      const reply=await host().transport.request('read_pair',{path});
+      const pair=normalizePair(reply.result as unknown as HalfFramePair);
+      const old=get().sidecar;
+      const second=shootingParams(old.params,pair.right?.metadata??null).dateBack.text;
+      set({pair,sidecar:{...old,params:{...old.params,autoExposure:false,
+        filmEdge:{...old.params.filmEdge,format:'135_half',pair:true,active:pair.onStrip},
+        dateBack:{...old.params.dateBack,textB:second}}}});
+    }
     const params = get().sidecar.params;
     const decode = decodeWire(get().sidecar.decode, isRawPath(path));
     let r;
@@ -699,10 +778,15 @@ async function develop(path: string, gen: number) {
       void host().close(r.session).catch(() => {});
       return;
     }
+    decodedPair=get().pair;
     sentParams = params;
     sentDecode = JSON.stringify(decode);
     set({ engineSession: r.session, nativeSize: { width: r.width, height: r.height }, metadata: r.metadata, frameKind: r.kind ?? (isRawPath(path) ? 'raw' : null) });
     noteAsShot();
+    if(params.filmEdge.active) {
+      const g=fitFilmGate(get().sidecar.geometry,{width:r.width,height:r.height},params.filmEdge.format,params.filmEdge.pair);
+      set({sidecar:{...get().sidecar,geometry:g}});
+    }
     platform().log(
       'info',
       `session: open path (ms): decode ${r.timings_ms?.decode ?? '?'} · open ${r.timings_ms?.open ?? '?'} · TOTAL ${Math.round(performance.now() - t0)} · core=${get().hello?.capabilities?.backend?.render_core ?? '?'}`,
@@ -916,10 +1000,80 @@ export async function boot() {
   platform().onDrop((paths) => void openPaths(paths));
   const launch = await platform().takeLaunchPaths();
   if (launch.length) await openPaths(launch);
-  window.addEventListener('beforeunload', () => void flushSave());
+  window.addEventListener('beforeunload', () => {void flushSave();void flushPairEdits();});
 }
 
 /** For tests and the export run. */
 export function _internals() {
   return { get, set };
+}
+
+// Half-frame files retain references to their source photos; saving a pair never edits a photo.
+let pairTimer:ReturnType<typeof setTimeout>|null=null;
+let pairSave:Promise<void>=Promise.resolve();
+let decodedPair:HalfFramePair|null=null;
+function pairImageKey(pair:HalfFramePair|null):string {
+  return JSON.stringify(pair && {...pair,left:pair.left?{...pair.left,print:null,adjustments:null,printScope:null,exposureScope:null}:null,right:pair.right?{...pair.right,print:null,adjustments:null,printScope:null,exposureScope:null}:null});
+}
+let pendingPair:{path:string;pair:HalfFramePair}|null=null;
+async function savePair(path:string,pair:HalfFramePair) {
+  try {
+    const reply=await host().transport.request('create_pair',{path,pair,overwrite:true,params:fullDelta(get().sidecar.params,get().gate)},{timeoutMs:600000});
+    if(get().selection!==path || get().pair!==pair)return;
+    const sid=get().engineSession;
+    const saved=normalizePair(reply.result as unknown as HalfFramePair);
+    if(sid && pairImageKey(saved)===pairImageKey(decodedPair)){set({pair:saved});await requestPrint();return;}
+    set({pair:saved,engineSession:null});
+   if(sid)await host().close(sid);
+    await develop(path,++openGen);
+  } catch(e){
+    if(get().selection===path && get().pair===pair) {
+      try {const reply=await host().transport.request('read_pair',{path});set({pair:normalizePair(reply.result as unknown as HalfFramePair)});}catch { /* preserve error */ }
+    }
+    noteError(tz('Update pair','更新双联'),e);
+  }
+}
+function queuePairSave(path:string,pair:HalfFramePair) {
+  if(pairTimer)clearTimeout(pairTimer);
+  pendingPair={path,pair};
+  pairTimer=setTimeout(()=>{pairTimer=null;pendingPair=null;pairSave=pairSave.then(()=>savePair(path,pair));},500);
+}
+export function updatePair(patch:Partial<HalfFramePair>) {
+  const s=get();if(!s.pair || !s.selection || s.batchExporting)return;
+  pushUndo();
+  const pair={...s.pair,...patch};
+  set({pair,status:tz('Updating pair…','正在更新双联…')});
+  queuePairSave(s.selection,pair);
+}
+export async function flushPairEdits() {
+  if(pairTimer){clearTimeout(pairTimer);pairTimer=null;const pending=pendingPair;pendingPair=null;if(pending)pairSave=pairSave.then(()=>savePair(pending.path,pending.pair));}
+  await pairSave;
+}
+export function updatePairHole(side:'left'|'right',patch:Partial<PairHole>) {
+  const p=get().pair;if(!p?.[side])return;
+  if(patch.decode || patch.geometry || patch.path || patch.meterMethod)patch={...patch,meteredEV:null};
+  if(patch.exposureEV!==undefined && p[side]!.exposureScope==='film') {
+    const s=get(),film=trimOf(s.sidecar.params),moved=patch.exposureEV-p[side]!.exposureEV;
+    const left=p.left?{...p.left,print:p.left.print??film}:null,right=p.right?{...p.right,print:p.right.print??film}:null;
+    pushUndo();set({sidecar:{...s.sidecar,params:{...s.sidecar.params,printBrightnessStops:clamp(s.sidecar.params.printBrightnessStops+moved,-3,3)}}});scheduleSave();
+    updatePair({left,right,[side]:{...(side==='left'?left:right)!,...patch}});return;
+  }
+  updatePair({[side]:{...p[side],...patch}});
+}
+export async function createHalfFramePair() {
+  const s=get();if(s.batchExporting)return;
+  const paths=s.picked.length===2?s.picked:await platform().pickFiles(tz('Choose two photos','选择两张照片'));
+  const photos=paths.filter(p=>!isPair(p));if(photos.length!==2){setStatus(tz('Choose exactly two photos.','请选择两张照片。'));return;}
+  const target=await platform().pickSave(tz('Save half-frame pair','保存半格双联'),joinPath(dirName(photos[0]!), 'Half-Frame Pair.spektrapair'),'spektrapair');
+  if(!target)return;
+  try {
+    const holes=await Promise.all(photos.map(async path=>{
+      const sidecar=decodeSidecar(await platform().sidecarLoad(path));
+      return {path,geometry:sidecar.geometry,decode:sidecar.decode,autoExposure:sidecar.params.autoExposure,
+        exposureEV:0,placement:{scale:1,x:0,y:0,quarterTurns:0}};
+    }));
+    const pair:HalfFramePair={schemaVersion:1,folder:dirName(target),left:holes[0]!,right:holes[1]!,spacingMM:1,onStrip:true,turned:false};
+    await host().transport.request('create_pair',{path:target,pair,params:fullDelta(s.sidecar.params,s.gate)},{timeoutMs:600000});
+    await openPaths([target]);
+  }catch(e){noteError(tz('Create pair','创建双联'),e);}
 }

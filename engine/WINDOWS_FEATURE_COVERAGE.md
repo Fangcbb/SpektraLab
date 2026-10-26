@@ -6,7 +6,7 @@ was Windows, MinGW GCC 15.2, Vulkan and RTX 5070 Ti. It does not imply that
 every stock, camera, parameter combination or later upstream feature is
 supported. Later features require explicit porting and validation.
 
-The backend contains 34 kernels, including two diagnostic probes. The full
+The original acceptance backend contained 34 kernels, including two diagnostic probes. The full
 Win32 integration passed 16 CTests and 47 Python tool tests. Original baked
 profile/resource files were unchanged; native TIFF export adds a separate
 provenance-described sRGB ICC resource. Whole-image Metal/Python film-model
@@ -39,8 +39,30 @@ parity remains unverified.
 | Minimal Win32 viewer | Serial worker and immutable RGBA16/BGRA8 frames | Full RAW open, film/paper/brightness edits, fit/100% pan, same-frame export and failed-open preservation |
 | Qt Quick editor | Shared native host, three-panel layout and single-photo strip | Full RAW/controller/offscreen scene regression; physical 100% samples, repeated texture updates and failure recovery; live display validation pending |
 | Window drawing | sRGB-labelled bitmap and requested GDI ICM | Offscreen handlers/layout and 1:1 BGR pixel checks; visible gestures, calibrated monitor ICC, HDR and multi-monitor acceptance remain pending |
-| Scene latitude analysis | Existing pipeline and explicit probe readback | Real C ABI analysis test; applying scene latitude mapping remains unsupported |
-| New upstream effects | Explicit Windows capability and request rejection | Cineon DI, scene latitude mapping, contrast mask, film edge and date imprint are refused before session mutation; the old normalised-density DI tap remains available |
+| Scene latitude analysis | Existing pipeline and explicit probe readback | Analysis and mapping supported; float64 mapping gate and host integration tests |
+| New upstream effects | Vulkan imaging kernels and portable coverage rasterization | All five effects enabled in 1.4.0; 34 float64 cases and 137 overscan checks on lavapipe, native Windows binary smoke-tested in Wine; real Windows acceptance pending |
+
+
+## 1.4.0 imaging port (2026-10-26)
+
+The Tauri desktop now enables film edge, date/data back, Scene Placement,
+contrast mask and Cineon output. Crop/turn/flip run before film/date exposure,
+then preview, navigator and export use the expanded canvas without cropping
+it again. Half-frame `.spektrapair` files retain two source references with
+independent geometry, decode WB, metering, exposure, print trims and grades;
+the host restores the common print parameters after each layer. Empty holes
+are supported when the other source is present. Four product B&W profiles
+and their silver-paper calibration are included.
+
+Windows JPEG thumbnails request WIC decoder scaling before float expansion;
+codec failure uses stb. `SPEKTRALAB_DISABLE_WIC=1` selects the fallback for
+diagnostics. A 7580×5053 JPEG / 2048-pixel thumbnail benchmark in Wine measured
+warm medians 2517 ms (WIC) and 2973 ms (stb), three warm samples each. This is
+not a real Windows or GPU speed claim. Large export edits run in a Web Worker.
+
+Automatic calibrated lens correction and RAW neutral-point sampling remain
+unported. There is no display-profile/HDR monitor acceptance or whole-image
+Metal parity claim. The installer is unsigned and targets Windows 10/11 x64.
 
 ## Test interpretation
 

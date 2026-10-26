@@ -40,17 +40,17 @@ commits.
 | `spk_warm_up` | untested | untested | the host does not call it |
 | `spk_open` | tested (Windows) | tested (`spk_vulkan_smoke`, `spk_windows_c_abi`) | |
 | `spk_open_device` | refused | refused | device-buffer input is Metal-only; pass `null` |
-| `spk_set_params` / `spk_get_params` | tested (Windows) | tested (`spk_windows_feature_boundaries`) | unported deltas rejected before mutation |
+| `spk_set_params` / `spk_get_params` | tested (Windows) | tested (`spk_windows_feature_boundaries`) | invalid deltas rejected before mutation |
 | `spk_solve` | untested | tested (host smoke `solve`) | portable (setup only) |
 | `spk_render` (live/preview/full) | tested (Windows) | tested (`spk_windows_c_abi`) | |
 | `spk_reprint` | tested (Windows) | tested (host smoke: `reprinted: true` after a print-side delta) | |
-| `spk_contrast_mask_field` | refused | refused | RFC-024, see §2 |
-| `spk_scene_latitude` (analysis) | tested (Windows) | tested (host smoke) | the *analysis* runs; *applying* the mapping is refused |
-| `spk_overscan_geometry` | missing (link error) | tested: returns `{"valid":false}` | the merge left the symbol undefined; stubbed so the engine links |
+| `spk_contrast_mask_field` | refused | tested (`spk_windows_feature_boundaries`) | RFC-024 |
+| `spk_scene_latitude` (analysis) | tested (Windows) | tested (host smoke) | analysis and mapping run; float64 mapping gate `spk_vulkan_imaging` |
+| `spk_overscan_geometry` | missing (link error) | tested (`overscan_checks.py`) | real normalized gate quads after a film render |
 | `spk_print_lut_catalog` / `spk_print_lut_table` | tested (Windows) | tested (host smoke `export_cube`) | portable core |
 | `spk_preview_stock_lut` | tested (Windows) | tested (host smoke) | `spk_lut3d_trilinear` |
 | `spk_export_di` | tested (Windows) | tested (host smoke `export_di`) | normalised-density tap |
-| `spk_render_digital_intermediate` | refused | refused | Cineon DI (`spk_di_encode`) unported |
+| `spk_render_digital_intermediate` | refused | tested (`spk_windows_feature_boundaries`) | Cineon DI; float64 encoding gate |
 | `spk_output_transform` | untested | tested (every host `rgba8`/display render and export; a P3 export converted by lcms lands within MAE 0.6 % of the host's sRGB export) | portable core |
 | `spk_memory_report` | untested | tested (host smoke) | |
 | `spk_cancel` / `spk_progress` | untested | tested (host smoke: a full render cancelled mid-flight returns `SPK_ERR_CANCELLED` and the session renders again) | |
@@ -61,13 +61,13 @@ commits.
 | section | fields | Windows_Port | Now |
 |---|---|---|---|
 | §1–§10 core render, tiers, reprint, live-mutable set | every field in `params_schema` predating RFC-024 | implemented; whole-image Metal parity unverified | same |
-| §11 contrast mask (RFC-024) | `contrast_mask_{active,highlights,shadows,core,scale,scheme}` | **refused** when `active` | refused |
-| §12 Scene Latitude (RFC-023) | `scene_latitude_{active,norm,shadow_knee,highlight_knee,shadow_room,highlight_room,max_lift,rolloff}` | **refused** when `active` (analysis call works) | refused |
-| §13 overscan / film edge (RFC-031/032) | `overscan_{active,mode,format,gate,holes,carrier,edge_text,frame_number,frame_seed,camera_seed,f_number,fog,leaks,pair}` | **refused** when `active` | refused |
-| §13 date back | `date_imprint_{active,text,text_b,data_text,style,corner,placement,size,ev,inset_x,inset_y}` | **refused** when `active` | refused |
+| §11 contrast mask (RFC-024) | `contrast_mask_{active,highlights,shadows,core,scale,scheme}` | **refused** when `active` | tested (1.4.0; imaging/overscan gates) |
+| §12 Scene Latitude (RFC-023) | `scene_latitude_{active,norm,shadow_knee,highlight_knee,shadow_room,highlight_room,max_lift,rolloff}` | **refused** when `active` (analysis call works) | tested (1.4.0; imaging/overscan gates) |
+| §13 overscan / film edge (RFC-031/032) | `overscan_{active,mode,format,gate,holes,carrier,edge_text,frame_number,frame_seed,camera_seed,f_number,fog,leaks,pair}` | **refused** when `active` | tested (1.4.0; imaging/overscan gates) |
+| §13 date back | `date_imprint_{active,text,text_b,data_text,style,corner,placement,size,ev,inset_x,inset_y}` | **refused** when `active` | tested (1.4.0; imaging/overscan gates) |
 | §14 `filter_shift_scale` | `filter_shift_scale` | implemented (portable `printing.cpp`) | implemented, untested here |
-| §15 `camera_filter` (2026-10-07) | `camera_filter` | — | implemented (portable `hanatos.cpp`, `params.cpp`; table in `camera_filters.hpp`), untested here; `desktop/mock-host/schema-fields.json` does not list it yet |
-| `io.digital_intermediate` (Cineon DI file) | | refused | refused |
+| §15 `camera_filter` | `camera_filter` | — | tested (`bw_checks.py`); eight measured filters in the desktop UI |
+| `io.digital_intermediate` (Cineon DI file) | | refused | tested (1.4.0; imaging/overscan gates) |
 | anti-halation switch, highlight boost (9fa3b0d) | `halation`/`boost` fields | implemented via `spk_boost` | implemented, untested here |
 
 ## 3. Kernels: Metal vs Vulkan
@@ -85,35 +85,35 @@ commits.
 | `spk_geometry_resample_df` | same | tested | tested on lavapipe at the original bound (§5) |
 | `spk_cam16ucs_compress` | same | tested | tested |
 | `spk_grain_layers`, `spk_grain_simple`, `spk_lognormal_field`, `spk_grain_layer_one` | same (+ `spk_rng_probe`) | tested | tested (`spk_vulkan_grain`) |
-| `spk_di_encode` (Cineon DI) | **missing** | refused | refused |
-| `spk_mask_reduce`, `spk_mask_epilogue` (contrast mask) | **missing** | refused | refused |
-| `spk_scene_latitude` | **missing** | refused | refused |
-| `spk_overscan_canvas`, `spk_overscan_add_mask`, `spk_overscan_film_present`, `spk_overscan_light` | **missing** | refused | refused |
+| `spk_di_encode` (Cineon DI) | same names | refused | tested (float64 imaging gate / overscan checks) |
+| `spk_mask_reduce`, `spk_mask_epilogue` (contrast mask) | same names | refused | tested (float64 imaging gate / overscan checks) |
+| `spk_scene_latitude` | same names | refused | tested (float64 imaging gate / overscan checks) |
+| `spk_overscan_canvas`, `spk_overscan_add_mask`, `spk_overscan_film_present`, `spk_overscan_light` | same names | refused | tested (float64 imaging gate / overscan checks) |
 
-Host-side (C++) dependencies of the unported features: `contrast_mask.cpp`
-uses GCD (`dispatch_apply`); `overscan.cpp` uses CoreText/CoreGraphics for the
-edge print and date back, and vImage for a convolution.
+Host-side portable implementations use bounded independent row workers and
+stb_truetype/Liberation Sans coverage rasterization. Apple builds retain
+GCD, CoreText/CoreGraphics and vImage.
 
-## 4. What main added after 61bfc49 that Vulkan lacks
+## 4. Features added after 61bfc49
 
 36 commits; the engine ones, and their state off Apple:
 
 | commit(s) | what | off Apple |
 |---|---|---|
 | 9fa3b0d | anti-halation switch, highlight boost | portable (existing kernels) |
-| 2108544, 4a9ea54, 122c5fb, 4767b48, a2f7acb, abc55d5, 8179327, 9cc53c2, 3fe47b5, 079ec29, 25fe66f, b97b7fa, e985110, 75d8eb5, da9ae19 | film edge / overscan: frame number, panoramic formats, carrier, half-frame pair, perforation softness, Fujifilm/Kodak edge print | refused (overscan) |
-| abc55d5, 079ec29 | a pair's second Scene Placement | refused (scene latitude) |
-| 3ec73b2 | date back: date + shooting data, date on 120 | refused (date imprint) |
+| 2108544, 4a9ea54, 122c5fb, 4767b48, a2f7acb, abc55d5, 8179327, 9cc53c2, 3fe47b5, 079ec29, 25fe66f, b97b7fa, e985110, 75d8eb5, da9ae19 | film edge / overscan: frame number, panoramic formats, carrier, half-frame pair, perforation softness, Fujifilm/Kodak edge print | implemented; overscan checks |
+| abc55d5, 079ec29 | a pair's second Scene Placement | implemented; float64 gate |
+| 3ec73b2 | date back: date + shooting data, date on 120 | implemented; date/data checks |
 | f8223db | Enlarger filters move the print | portable (`printing.cpp`) |
 
 The merge is textual; semantic reconciliation of `pipeline.cpp`/`engine.cpp`
 between the two lines is verified only by the CTests named above.
 
-## 5. Current state (2026-10-06)
+## 5. Historical acceptance (2026-10-06)
 
-**The five refused features stay refused, by the owner's decision**
-(2026-10-06); `engine/PORT_PLAN.md` is the handoff for porting them.
-Everything else in the API spec runs on Vulkan.
+At that date the five imaging effects were still refused. The 1.4.0 rows
+above supersede that decision and record the new implementation/tests.
+The remaining entries below retain the original acceptance evidence.
 
 Verified on lavapipe (Mesa 25.2, llvmpipe LLVM 20, a CPU device):
 

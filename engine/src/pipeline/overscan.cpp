@@ -19,9 +19,19 @@
 //                 and (on 120, which is not sprocket-locked) where the edge
 //                 numbers land.
 // Text is rasterised with CoreText/CoreGraphics.
+#ifdef __APPLE__
 #include <Accelerate/Accelerate.h>
 #include <CoreGraphics/CoreGraphics.h>
 #include <CoreText/CoreText.h>
+#else
+#include <fstream>
+#include <stdexcept>
+#include "file_path.hpp"
+#include "parallel_rows.hpp"
+#define STB_TRUETYPE_IMPLEMENTATION
+#define STBTT_STATIC
+#include "../../third_party/stb/stb_truetype.h"
+#endif
 
 #include <algorithm>
 #include <cmath>
@@ -847,6 +857,7 @@ void film_to_canvas_px(const OverscanLayout& L, double s, double t, double& x, d
     y = v / L.px;
 }
 
+#ifdef __APPLE__
 CFAttributedStringRef make_text(const Op& op, CTFontRef font, double gain) {
     CFStringRef str = CFStringCreateWithCString(nullptr, op.text.c_str(), kCFStringEncodingUTF8);
     CGFloat white[] = {CGFloat(std::clamp(gain, 0.0, 1.0)), 1.0};
@@ -862,6 +873,130 @@ CFAttributedStringRef make_text(const Op& op, CTFontRef font, double gain) {
     return as;
 }
 
+#else
+// Portable coverage rasterizer. Physical layout remains in overscan.cpp.
+// Liberation Sans substitutes the non-redistributable Helvetica Neue face.
+struct PortableFont {
+    std::vector<unsigned char> bytes;
+    stbtt_fontinfo info{};
+    void load(const std::string& path) {
+        std::ifstream f(file_path(path), std::ios::binary);
+        if (!f) throw std::runtime_error("cannot open film-edge font " + path);
+        bytes.assign(std::istreambuf_iterator<char>(f), {});
+        if (bytes.empty() || !stbtt_InitFont(&info, bytes.data(), 0))
+            throw std::runtime_error("invalid film-edge font " + path);
+    }
+};
+struct PortableFonts {
+    std::string root;
+    PortableFont regular, bold;
+    void load(const std::string& dir) {
+        if (root == dir) return;
+        regular.load(dir + "/LiberationSans-Regular.ttf");
+        bold.load(dir + "/LiberationSans-Bold.ttf");
+        root = dir;
+    }
+    stbtt_fontinfo* face(const char* name) {
+        return std::strstr(name, "Bold") || std::strstr(name, "Medium") ? &bold.info : &regular.info;
+    }
+};
+thread_local PortableFonts portable_fonts;
+
+std::vector<int> text_codepoints(const std::string& text) {
+    std::vector<int> out;
+    for(size_t i=0;i<text.size();) {
+        const auto lead=static_cast<unsigned char>(text[i++]);
+        if(lead<0x80){out.push_back(lead);continue;}
+        const int length=lead>=0xf0?4:lead>=0xe0?3:lead>=0xc2?2:0;
+        int value=length?lead&((1<<(7-length))-1):0xfffd;
+        bool valid=length && i+length-1<=text.size();
+        for(int j=1;valid && j<length;++j) {
+            const auto next=static_cast<unsigned char>(text[i]);
+            if((next&0xc0)!=0x80){valid=false;break;}
+            value=(value<<6)|(next&0x3f);++i;
+        }
+        if(!valid || value>0x10ffff || (value>=0xd800 && value<=0xdfff) ||
+           (length==2 && value<0x80) || (length==3 && value<0x800) || (length==4 && value<0x10000))value=0xfffd;
+        out.push_back(value);
+    }
+    return out;
+}
+
+
+void portable_draw(const OverscanLayout& L, const Group& g, int w, int h, int x0, int y0,
+                   std::vector<uint8_t>& pixels) {
+    // Keep transformed short vertices in range, with subpixel precision when possible.
+    const double quant = std::max(1.0, std::min(16.0, 28000.0 / std::max(w, h)));
+    auto transform = [&](double s, double t, short& x, short& y) {
+        double px, py; film_to_canvas_px(L, s, t, px, py);
+        x = short(std::clamp(std::round((px-x0)*quant), -32760.0, 32760.0));
+        y = short(std::clamp(std::round((py-y0)*quant), -32760.0, 32760.0));
+    };
+    auto paint = [&](std::vector<stbtt_vertex>& v, double gain) {
+        if (v.empty()) return;
+        int left=w,top=h,right=0,bottom=0;
+        auto grow=[&](short x,short y) {
+            left=std::min(left,int(std::floor(x/quant))-1);top=std::min(top,int(std::floor(y/quant))-1);
+            right=std::max(right,int(std::ceil(x/quant))+2);bottom=std::max(bottom,int(std::ceil(y/quant))+2);
+        };
+        for(const auto& point:v) {
+            grow(point.x,point.y);
+            if(point.type==STBTT_vcurve || point.type==STBTT_vcubic)grow(point.cx,point.cy);
+            if(point.type==STBTT_vcubic)grow(point.cx1,point.cy1);
+        }
+        left=std::clamp(left,0,w);right=std::clamp(right,0,w);
+        top=std::clamp(top,0,h);bottom=std::clamp(bottom,0,h);
+        if(left>=right || top>=bottom)return;
+        const int width=right-left,height=bottom-top;
+        std::vector<uint8_t> coverage(size_t(width)*height);
+        stbtt__bitmap bitmap{width,height,width,coverage.data()};
+        stbtt_Rasterize(&bitmap,0.20f,v.data(),int(v.size()),float(1/quant),float(1/quant),0,0,left,top,0,nullptr);
+        for(int y=0;y<height;++y)for(int x=0;x<width;++x) {
+            const auto value=coverage[size_t(y)*width+x];if(!value)continue;
+            const double a=value/255.0;auto& target=pixels[size_t(y+top)*w+x+left];
+            target=uint8_t(std::clamp(std::round(255*std::clamp(gain,0.0,1.0)*a+target*(1-a)),0.0,255.0));
+        }
+    };
+    for (const auto& op:g.ops) {
+        if (op.kind != Op::Text) {
+            std::vector<stbtt_vertex> vertices;
+            const size_t count=op.kind==Op::Circle ? 64 : op.pts.size()/2;
+            for(size_t i=0;i<=count && count>0;++i) {
+                const size_t j=i%count;
+                double s,t;
+                if(op.kind==Op::Circle) { const double a=2*M_PI*double(j)/count; s=op.pts[0]+op.size_mm*std::cos(a);t=op.pts[1]+op.size_mm*std::sin(a); }
+                else {s=op.pts[2*j];t=op.pts[2*j+1];}
+                stbtt_vertex v{};v.type=i==0?STBTT_vmove:STBTT_vline;transform(s,t,v.x,v.y);vertices.push_back(v);
+            }
+            paint(vertices,op.gain);continue;
+        }
+        auto* font=portable_fonts.face(op.font);
+        const double scale=stbtt_ScaleForMappingEmToPixels(font,float(op.size_mm));
+        double pen=0; const double angle=op.rot_deg*M_PI/180,co=std::cos(angle),si=std::sin(angle);
+        const auto codepoints=text_codepoints(op.text);
+        for(size_t k=0;k<codepoints.size();++k) {
+            const int ch=codepoints[k];
+            stbtt_vertex* glyph=nullptr;const int count=stbtt_GetCodepointShape(font,ch,&glyph);
+            std::vector<stbtt_vertex> vertices;
+            if(count>0)vertices.assign(glyph,glyph+count);
+            auto point=[&](short& x,short& y) {
+                const double a=pen+double(x)*scale*op.hscale,b=-double(y)*scale;
+                transform(op.s+a*co-b*si,op.t+a*si+b*co,x,y);
+            };
+            for(auto& v:vertices) {
+                point(v.x,v.y);
+                if(v.type==STBTT_vcurve || v.type==STBTT_vcubic) point(v.cx,v.cy);
+                if(v.type==STBTT_vcubic) point(v.cx1,v.cy1);
+            }
+            paint(vertices,op.gain);stbtt_FreeShape(font,glyph);
+            int advance,bearing;stbtt_GetCodepointHMetrics(font,ch,&advance,&bearing);
+            const int kern=k+1<codepoints.size()?stbtt_GetCodepointKernAdvance(font,ch,codepoints[k+1]):0;
+            pen+=(scale*(advance+kern)+op.tracking_mm)*(op.scale_advances?op.hscale:1.0);
+        }
+    }
+}
+
+#endif
 // Rasterise one group into a canvas-aligned coverage bitmap (its bounding box).
 bool rasterise(const OverscanLayout& L, const Group& g, std::vector<float>& cov, int& x0, int& y0,
                int& w, int& h) {
@@ -897,6 +1032,7 @@ bool rasterise(const OverscanLayout& L, const Group& g, std::vector<float>& cov,
     if (w <= 0 || h <= 0) return false;
 
     std::vector<uint8_t> px(size_t(w) * size_t(h), 0);
+#ifdef __APPLE__
     CGColorSpaceRef gray = CGColorSpaceCreateDeviceGray();
     CGContextRef ctx = CGBitmapContextCreate(px.data(), size_t(w), size_t(h), 8, size_t(w), gray,
                                              kCGImageAlphaNone);
@@ -951,6 +1087,9 @@ bool rasterise(const OverscanLayout& L, const Group& g, std::vector<float>& cov,
     }
     CGContextRelease(ctx);
 
+#else
+    portable_draw(L,g,w,h,x0,y0,px);
+#endif
     cov.resize(px.size());
     for (size_t i = 0; i < px.size(); ++i) cov[i] = float(px[i]) * (1.0f / 255.0f);
     // The projection's softness (RFC-031 §3.4): a small Gaussian on the mask.
@@ -967,6 +1106,7 @@ bool rasterise(const OverscanLayout& L, const Group& g, std::vector<float>& cov,
         for (int i = -r; i <= r; ++i) { k[size_t(i + r)] = float(std::exp(-0.5 * i * i / (sigma * sigma))); sum += k[size_t(i + r)]; }
         for (float& v : k) v = float(v / sum);
         std::vector<float> tmp(cov.size(), 0.0f);
+#ifdef __APPLE__
         vImage_Buffer src{cov.data(), vImagePixelCount(h), vImagePixelCount(w), size_t(w) * sizeof(float)};
         vImage_Buffer dst{tmp.data(), vImagePixelCount(h), vImagePixelCount(w), size_t(w) * sizeof(float)};
         const uint32_t taps = uint32_t(2 * r + 1);
@@ -975,6 +1115,17 @@ bool rasterise(const OverscanLayout& L, const Group& g, std::vector<float>& cov,
             vImageConvolve_PlanarF(&dst, &src, nullptr, 0, 0, k.data(), taps, 1, 0.0f, kvImageEdgeExtend)
                 != kvImageNoError)
             return false;
+#else
+        parallel_rows(uint32_t(h),[&](uint32_t y) {for(int x=0;x<w;++x) {
+            double value=0;for(int j=-r;j<=r;++j) value+=cov[size_t(y)*w+std::clamp(x+j,0,w-1)]*k[size_t(j+r)];
+            tmp[size_t(y)*w+x]=float(value);
+        }});
+        parallel_rows(uint32_t(h),[&](uint32_t row) {const int y=int(row);for(int x=0;x<w;++x) {
+            double value=0;for(int j=-r;j<=r;++j) value+=tmp[size_t(std::clamp(y+j,0,h-1))*w+x]*k[size_t(j+r)];
+            cov[size_t(y)*w+x]=float(value);
+        }});
+#endif
+
     }
     return true;
 }
@@ -1364,6 +1515,7 @@ double dot_text(const std::string& text, const DotFace& f, double ps, double pt,
 
 // A Helvetica-family string's advance in film mm, as CoreText lays it out.
 double text_width(const char* font, double size_mm, const std::string& text, double tracking_mm, double hscale) {
+#ifdef __APPLE__
     Op op;
     op.font = font; op.size_mm = size_mm; op.text = text; op.tracking_mm = tracking_mm;
     CFStringRef fname = CFStringCreateWithCString(nullptr, font, kCFStringEncodingUTF8);
@@ -1374,6 +1526,19 @@ double text_width(const char* font, double size_mm, const std::string& text, dou
     const double w = CTLineGetTypographicBounds(line, nullptr, nullptr, nullptr);
     CFRelease(line); CFRelease(as); CFRelease(f);
     return w * hscale;
+#else
+    auto* face=portable_fonts.face(font);
+    const double scale=stbtt_ScaleForMappingEmToPixels(face,float(size_mm));
+    double width=0;
+    const auto codepoints=text_codepoints(text);
+    for(size_t i=0;i<codepoints.size();++i) {
+        int advance,bearing;stbtt_GetCodepointHMetrics(face,codepoints[i],&advance,&bearing);
+        width+=advance*scale;
+        if(i+1<codepoints.size()) width+=tracking_mm+scale*stbtt_GetCodepointKernAdvance(face,codepoints[i],codepoints[i+1]);
+    }
+    return width*hscale;
+#endif
+
 }
 
 // The film edge -- the stock's own (`edge_look_for`), measured on the owner's
@@ -2085,6 +2250,9 @@ bool Pipeline::node_overscan(const Image& in, Image& out, std::string& error) {
     }
     const bool date_only = !overscan_wanted() && di.active;
     if (!overscan_wanted() && !date_only) { out = in; return true; }
+#ifndef __APPLE__
+    portable_fonts.load(blob_->resource_directory()+"/fonts");
+#endif
     Timer t(this, "filming.expose.overscan");
     frame_w_mm_ = in.w * pixel_size_um_ / 1000.0;
     frame_h_mm_ = in.h * pixel_size_um_ / 1000.0;

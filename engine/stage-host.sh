@@ -36,6 +36,7 @@ cp "$repo/modern_UI/Spektrafilm/Spektrafilm/Resources/Licenses/Profiles-and-LUTs
 cp "$repo/modern_UI/Spektrafilm/Spektrafilm/Resources/Licenses/Profiles-and-LUTs-CHANGELOG.txt" "$lic/"
 cp "$deps/LibRaw-0.22.2/LICENSE.LGPL" "$lic/LibRaw-LGPL-2.1.txt"
 cp "$deps/LibRaw-0.22.2/COPYRIGHT" "$lic/LibRaw-COPYRIGHT.txt"
+cp "$here/resources/fonts/LICENSE.txt" "$lic/Liberation-Fonts-OFL-1.1.txt"
 cp "$here/third_party/stb/LICENSE" "$lic/stb-LICENSE.txt"
 cp "$here/third_party/volk/LICENSE.md" "$lic/volk-LICENSE.txt"
 cp "$deps/Vulkan-Headers/LICENSE.md" "$lic/Vulkan-Headers-LICENSE.txt"
@@ -49,6 +50,7 @@ Bundled third-party components:
   LibRaw 0.22.2        LGPL-2.1, statically linked; source: libraw.org, and
                        engine/setup-libraw.sh fetches the exact pinned tree.
   stb_image, stb_image_write, stb_truetype   public domain / MIT (stb-LICENSE.txt)
+  Liberation Sans      SIL OFL 1.1 (Liberation-Fonts-OFL-1.1.txt)
   volk                 MIT (volk-LICENSE.txt)
   Vulkan-Headers       Apache-2.0 OR MIT, compile time only
 Film and paper profiles and print LUTs under engine/: CC BY-SA 4.0

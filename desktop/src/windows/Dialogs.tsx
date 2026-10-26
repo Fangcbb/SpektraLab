@@ -212,7 +212,7 @@ export function AboutDialog() {
     if (!open) return;
     void platform().appPaths().then(setPaths);
     void Promise.all(
-      ['SpektraLab-GPL-3.0.txt', 'Profiles-and-LUTs-CC-BY-SA-4.0.txt', 'README.txt'].map(async (name) => {
+      ['SpektraLab-GPL-3.0.txt', 'Profiles-and-LUTs-CC-BY-SA-4.0.txt', 'Liberation-Fonts-OFL-1.1.txt', 'README.txt'].map(async (name) => {
         try {
           const r = await fetch('assets/licenses/' + name);
           return { name, body: r.ok ? await r.text() : '' };
@@ -226,7 +226,7 @@ export function AboutDialog() {
     <Frame open={open} onClose={() => setPages({ aboutOpen: false })} title="SpektraLab" testId="about">
       <div className="dialog-body">
         <p>
-          {tz('Version', '版本')} {paths?.version ?? '1.3.1'} — {tz('film and print emulation built on the spektrafilm engine.', '基于 spektrafilm 引擎的胶片与相纸模拟。')}
+          {tz('Version', '版本')} {paths?.version ?? '1.4.0'} — {tz('film and print emulation built on the spektrafilm engine.', '基于 spektrafilm 引擎的胶片与相纸模拟。')}
         </p>
         <p className="caption">
           {tz(

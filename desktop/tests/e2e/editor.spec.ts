@@ -71,3 +71,24 @@ test('the export page names the file and holds the frame while it runs', async (
   await expect.poll(() => state(page, 's.batchExporting')).toBe(false);
   await expect(page.getByTestId('export-page')).toContainText('DSC_0001');
 });
+
+test('film edge and date edits remain enabled with a capable host',async({page})=>{
+  await page.goto('/?open=&allFeatures=1');
+  await expect(page.getByTestId('tier-badge')).toHaveText('full',{timeout:20000});
+  const film=page.locator('[data-section="filmEdge"]');
+  await film.getByRole('switch',{name:'Film Edge',exact:true}).click();
+  expect(await state(page,'s.sidecar.params.filmEdge.active')).toBe(true);
+  const date=page.locator('[data-section="dateBack"]');
+  await date.getByRole('switch',{name:'Imprint',exact:true}).click();
+  await date.getByRole('textbox',{name:'Custom date',exact:true}).fill("'24 6 18");
+  expect(await state(page,'s.sidecar.params.dateBack.customText')).toBe("'24 6 18");
+  expect(await state(page,'s.gate.overscan && s.gate.dateImprint && s.gate.toneMask')).toBe(true);
+  await expect(page.getByTestId('canvas')).toBeVisible();
+});
+
+test('black-and-white film chooses its silver paper',async({page})=>{
+  await openRoll(page);
+  await page.locator('[data-stock="kodak_tri_x_400"]').click();
+  expect(await state(page,'s.sidecar.params.printStock')).toBe('ilford_multigrade_iv_rc');
+  await expect(page.getByTestId('tier-badge')).toHaveText('full',{timeout:20000});
+});

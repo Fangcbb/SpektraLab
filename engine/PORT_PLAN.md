@@ -1,12 +1,19 @@
 # Porting the five refused features to Vulkan -- a handoff
 
-**Status (owner's decision, 2026-10-06):** contrast mask, scene latitude
-mapping, Cineon Digital Intermediate, overscan/film edge and the date back
-stay **refused** off Apple. `capabilities.backend.unsupported_features` lists
-them, a request that turns one on fails with `SPK_ERR_USER` before the session
-changes, and the default render is unaffected. This file is for the engineer
-who ports them: what each feature touches, what is Apple-only, the portable
-replacement, how to test it on lavapipe, and an estimate.
+**Implemented in 1.4.0 (2026-10-26):** all five effects now run on Vulkan.
+Eight shaders replace the former refusals; `contrast_mask.cpp` uses bounded
+portable row workers and `overscan.cpp` uses stb_truetype with bundled,
+OFL-licensed Liberation Sans. Physical layout, film/paper data and date dot
+faces retain the upstream implementations. Helvetica text coverage differs
+from CoreText; exact Mac image parity is not claimed.
+
+Validation: `spk_vulkan_imaging` checks 34 float64 formula cases including
+million-pixel dispatch boundaries; `overscan_checks.py` covers all formats,
+DX bars, pair gates, exposure and date/data styles (137 passes);
+`bw_checks.py`, `windows_feature_boundaries.cpp`, native/Wine host and pair
+smokes cover integration. Real Windows/NVIDIA acceptance remains pending.
+The sections below retain the original implementation guide and reference
+requirements; their refusal-removal steps have been completed.
 
 Line numbers are as of commit 880cffa (branch
 `claude/spektralab-windows-linux-port-mi7r55`). Read `AGENTS.md` traps 19

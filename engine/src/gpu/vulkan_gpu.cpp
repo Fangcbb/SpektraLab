@@ -54,6 +54,10 @@ std::string vk_error(const char* operation, VkResult result) {
 
 struct KernelSpec { const char* name; uint32_t bindings; uint32_t workgroup; };
 constexpr KernelSpec kKernels[] = {
+    {"spk_scene_latitude",4,kWorkgroup}, {"spk_mask_reduce",7,kWorkgroup},
+    {"spk_mask_epilogue",8,kWorkgroup}, {"spk_di_encode",4,kWorkgroup},
+    {"spk_overscan_canvas",4,kWorkgroup}, {"spk_overscan_add_mask",4,kWorkgroup},
+    {"spk_overscan_film_present",4,kWorkgroup}, {"spk_overscan_light",4,kWorkgroup},
     {"spk_math_probe", 2, 1},
     {"spk_take_rgb", 3, kWorkgroup},
     {"spk_matmul3", 4, kWorkgroup},

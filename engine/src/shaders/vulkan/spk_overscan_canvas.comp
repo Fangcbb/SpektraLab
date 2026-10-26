@@ -1,0 +1,257 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "spk_dispatch.glsl"
+layout(local_size_x=256) in;
+float log10(float x) { return log(x) * 0.4342944819032518; }
+vec3 log10(vec3 x) { return log(x) * 0.4342944819032518; }
+layout(std430,binding=0) readonly buffer B0 { float frame[]; };
+layout(std430,binding=1) readonly buffer B1 { float P[]; };
+layout(std430,binding=2) readonly buffer B2 { uint n[]; };
+layout(std430,binding=3) writeonly buffer B3 { float dst[]; };
+// overscan.metal -- RFC-032 §26-§27: the film outside the frame, as exposure.
+//
+// All three kernels read one parameter block `P` (floats; layout in
+// `overscan.cpp`, `enum OsP`, which is the single source of the indices).
+// Geometry is in film millimetres: `s` along the film, `t` across it, `t = 0`
+// at the film's first long edge. A canvas pixel maps to film coordinates
+// through the scan registration (a rotation and an offset), so the film --
+// gate, perforations, edge print -- can sit a hair off square in the output,
+// as it does in a real scan.
+
+
+const uint P_CW = 0u;
+const uint P_CH = 1u;
+const uint P_PX = 2u;
+const uint P_FW = 3u;
+const uint P_FH = 4u;
+const uint P_A00 = 5u;
+const uint P_A01 = 6u;
+const uint P_A10 = 7u;
+const uint P_A11 = 8u;
+const uint P_CS = 9u;
+const uint P_CT = 10u;
+const uint P_CU = 11u;
+const uint P_CV = 12u;
+const uint P_VERTICAL = 13u;
+const uint P_GS0 = 14u;
+const uint P_GT0 = 15u;
+const uint P_GW = 16u;
+const uint P_GH = 17u;
+const uint P_CORNER = 18u;
+const uint P_PENUMBRA = 19u;
+const uint P_WOB_A = 20u;
+const uint P_WOB_PH = 32u;
+const uint P_FILM_W = 44u;
+const uint P_FOG_AMP = 45u;
+const uint P_FOG_WIDTH = 46u;
+const uint P_FOG_SEED = 47u;
+const uint P_FOG_PERIOD = 48u;
+const uint P_FOG_R = 49u;
+const uint P_FOG_G = 50u;
+const uint P_FOG_B = 51u;
+const uint P_N_LEAKS = 52u;
+const uint P_PERFORATED = 83u;
+const uint P_PERF_PITCH = 84u;
+const uint P_PERF_W = 85u;
+const uint P_PERF_H = 86u;
+const uint P_PERF_EDGE = 87u;
+const uint P_PERF_R = 88u;
+const uint P_PERF_PHASE = 89u;
+const uint P_HOLE_C = 90u;
+const uint P_HOLE_M = 91u;
+const uint P_HOLE_Y = 92u;
+const uint P_FLARE_AMP = 93u;
+const uint P_FLARE_WIDTH = 94u;
+const uint P_GATE_R = 95u;
+const uint P_N_Q = 99u;
+const uint P_Q = 100u;
+const uint P_ROUGH_AMP = 180u;
+const uint P_ROUGH_PERIOD = 181u;
+const uint P_ROUGH_SEED = 182u;
+const uint P_HOLES_LIGHT = 183u;
+const uint P_LIGHT_R = 184u;
+const uint P_LIGHT_G = 185u;
+const uint P_LIGHT_B = 186u;
+const uint P_PERF_SEED = 187u;
+const uint P_LIGHT_FALL = 188u;
+const uint P_LIGHT_DIR = 189u;
+const uint P_WALL_T = 190u;
+const uint P_WALL_VS = 191u;
+const uint P_WALL_VT = 192u;
+const uint P_WALL_PAR = 193u;
+const uint P_BASE_R = 194u;
+const uint P_BASE_G = 195u;
+const uint P_BASE_B = 196u;
+const uint P_WALL_GLOW = 197u;
+const uint P_WALL_SCATTER = 198u;
+const uint P_CARRIER = 199u;
+const uint P_LEAKS = 200u;
+const uint P_PAIR_ADV = 260u;
+const uint P_COUNT = 261u;
+const uint kQStride = 10u;
+
+vec2 canvas_to_film(float x, float y) {
+    const float u = (x + 0.5f) * P[P_PX] - P[P_CU];
+    const float v = (y + 0.5f) * P[P_PX] - P[P_CV];
+    return vec2(P[P_A00] * u + P[P_A01] * v + P[P_CS], P[P_A10] * u + P[P_A11] * v + P[P_CT]);
+}
+
+uint hash_u(uint x) {
+    x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16;
+    return x;
+}
+float hash_f(int i, uint seed) { return float(hash_u(uint(i) * 0x9E3779B9u ^ seed)) * (1.0f / 4294967295.0f); }
+float value_noise(float x, uint seed) {
+    const float i0 = floor(x), f = x - i0;
+    const float w = f * f * (3.0f - 2.0f * f);
+    return mix(hash_f(int(i0), seed), hash_f(int(i0) + 1, seed), w);
+}
+
+// Signed distance to a convex quad (either winding; a repeated vertex makes a
+// triangle), negative inside.
+float sd_quad(vec2 p, uint q_offset) {
+    vec2 v[4] = {vec2(P[q_offset + (0)], P[q_offset + (1)]), vec2(P[q_offset + (2)], P[q_offset + (3)]), vec2(P[q_offset + (4)], P[q_offset + (5)]), vec2(P[q_offset + (6)], P[q_offset + (7)])};
+    float d = dot(p - v[0], p - v[0]);
+    float sgn = 1.0f;
+    for (uint i = 0u, j = 3u; i < 4u; j = i, ++i) {
+        const vec2 e = v[j] - v[i], w = p - v[i];
+        const float ee = dot(e, e);
+        if (ee < 1e-12f) continue;
+        const vec2 b = w - e * clamp(dot(w, e) / ee, 0.0f, 1.0f);
+        d = min(d, dot(b, b));
+        const bool c0 = p.y >= v[i].y, c1 = p.y < v[j].y, c2 = e.x * w.y > e.y * w.x;
+        if ((c0 && c1 && c2) || (!c0 && !c1 && !c2)) sgn = -sgn;
+    }
+    return sgn * sqrt(d);
+}
+
+// The gate (RFC-032 §29). Real gates are not symmetric rounded rectangles:
+// each corner has its own radius, and a camera's gate carries its own
+// features -- the eared sides of a 645 whose film rails stand proud, the
+// shoulders of a 6x8 mask, the kicked-out corners of a 6x6 insert, a burr.
+// Those come in as convex quads that add to or cut from the opening, and a
+// fine roughness models the machined edge. On top, each side keeps the
+// camera's low-frequency wobble (three harmonics, vanishing at the corners).
+// Signed distance, negative inside, in mm.
+float gate_sdf(vec2 st) {
+    const float hw = 0.5f * P[P_GW], hh = 0.5f * P[P_GH];
+    const float ds = st.x - (P[P_GS0] + hw), dt = st.y - (P[P_GT0] + hh);
+    const float r = ds > 0.0f ? (dt > 0.0f ? P[P_GATE_R + 2u] : P[P_GATE_R + 1u])
+                              : (dt > 0.0f ? P[P_GATE_R + 3u] : P[P_GATE_R + 0u]);
+    const float qs = abs(ds) - (hw - r), qt = abs(dt) - (hh - r);
+    float d = length(max(vec2(qs, qt), 0.0f)) + min(max(qs, qt), 0.0f) - r;
+    uint side; float along, len;
+    if (qs > qt) { side = ds > 0.0f ? 1u : 3u; along = dt + hh; len = 2.0f * hh; }
+    else         { side = dt > 0.0f ? 2u : 0u; along = ds + hw; len = 2.0f * hw; }
+    const float u = clamp(along / len, 0.0f, 1.0f);
+    float w = 0.0f;
+    for (uint k = 0; k < 3u; ++k)
+        w += P[P_WOB_A + side * 3u + k] * sin(float(k + 1u) * 3.141592653589793 * u + P[P_WOB_PH + side * 3u + k]);
+    d -= w * sin(3.141592653589793 * u);
+    const uint nq = uint(P[P_N_Q]);
+    for (uint k = 0; k < nq; ++k) {
+        uint q_offset = P_Q + kQStride * k;
+        float dq;
+        if (abs(P[q_offset + (9)]) > 1.5f) {
+            // an ellipse: centre P[q_offset + (0..1)], radii P[q_offset + (2..3)]; distance scaled by the
+            // smaller radius, exact on the boundary, which is all a penumbra reads
+            const vec2 r = max(vec2(P[q_offset + (2)], P[q_offset + (3)]), vec2(1e-4f));
+            dq = (length((st - vec2(P[q_offset + (0)], P[q_offset + (1)])) / r) - 1.0f) * min(r.x, r.y);
+        } else {
+            dq = sd_quad(st, q_offset) - P[q_offset + (8)];
+        }
+        d = P[q_offset + (9)] > 0.0f ? min(d, dq) : max(d, -dq);
+    }
+    if (P[P_ROUGH_AMP] > 0.0f) {
+        const uint seed = uint(P[P_ROUGH_SEED]);
+        const float per = max(P[P_ROUGH_PERIOD], 1e-3f);
+        d += P[P_ROUGH_AMP] * (value_noise(st.x / per, seed) + value_noise(st.y / per, seed ^ 0x5bd1e995u) - 1.0f);
+    }
+    return d;
+}
+
+// The gate's shadow on the emulsion from a circular aperture: the lit fraction
+// of a disc of radius r cut by a straight edge at signed distance d. Not a
+// Gaussian -- a Gaussian has tails a real penumbra does not have.
+float penumbra(float d, float r) {
+    if (r <= 1e-6f) return d < 0.0f ? 1.0f : 0.0f;
+    const float u = clamp(-d / r, -1.0f, 1.0f);
+    return 0.5f + (u * sqrt(max(1.0f - u * u, 0.0f)) + asin(u)) * (1.0f / 3.141592653589793);
+}
+
+vec3 sample_frame(float fx, float fy, uint fw, uint fh) {
+    fx = clamp(fx, 0.0f, float(fw) - 1.0f);
+    fy = clamp(fy, 0.0f, float(fh) - 1.0f);
+    const uint x0 = uint(floor(fx)), y0 = uint(floor(fy));
+    const uint x1 = min(x0 + 1u, fw - 1u), y1 = min(y0 + 1u, fh - 1u);
+    const float ax = fx - float(x0), ay = fy - float(y0);
+    const uint i00 = 3u * (y0 * fw + x0), i01 = 3u * (y0 * fw + x1);
+    const uint i10 = 3u * (y1 * fw + x0), i11 = 3u * (y1 * fw + x1);
+    const vec3 a = vec3(frame[i00], frame[i00 + 1u], frame[i00 + 2u]);
+    const vec3 b = vec3(frame[i01], frame[i01 + 1u], frame[i01 + 2u]);
+    const vec3 c = vec3(frame[i10], frame[i10 + 1u], frame[i10 + 2u]);
+    const vec3 d = vec3(frame[i11], frame[i11 + 1u], frame[i11 + 2u]);
+    return mix(mix(a, b, ax), mix(c, d, ax), ay);
+}
+
+// ① + ② + the fog of ③: raw exposure on the film canvas.
+
+void main() {
+
+    const uint i = spk_global_index();
+    if (i >= n[0]) return;
+    const uint cw = uint(P[P_CW]);
+    const vec2 st = canvas_to_film(float(i % cw), float(i / cw));
+    const float W = P[P_FILM_W];
+    vec3 e = vec3(0.0f);
+    if (P[P_CARRIER] > 1.5f || (st.y >= 0.0f && st.y <= W)) {
+        // A pair: past the middle of the gap, the second exposure of the same gate.
+        vec2 sg = st;
+        float shift = 0.0f;
+        if (P[P_PAIR_ADV] > 0.0f && st.x > P[P_GS0] + 0.5f * (P[P_GW] + P[P_PAIR_ADV])) { shift = P[P_PAIR_ADV]; sg.x -= shift; }
+        const float cov = penumbra(gate_sdf(sg), P[P_PENUMBRA]);
+        if (cov > 0.0f) {
+            const float px = P[P_PX];
+            float fx, fy;
+            if (P[P_VERTICAL] < 0.5f) { fx = (st.x - P[P_GS0]) / px - 0.5f; fy = (st.y - P[P_GT0]) / px - 0.5f; }
+            else                      { fx = (P[P_GT0] + P[P_GH] - st.y) / px - 0.5f; fy = (st.x - P[P_GS0]) / px - 0.5f; }
+            e += cov * sample_frame(fx, fy, uint(P[P_FW]), uint(P[P_FH]));
+        }
+        // Gate flare: the gate's bevelled edge reflects scene light onto the
+        // film just outside the frame -- a thin line that follows the scene's
+        // brightness along the edge (bright sky, bright line).
+        const float d_gate = gate_sdf(sg);
+        if (P[P_FLARE_AMP] > 0.0f && d_gate > -0.02f && d_gate < 6.0f * P[P_FLARE_WIDTH]) {
+            const float px = P[P_PX];
+            const float in_s = clamp(sg.x, P[P_GS0] + 0.12f, P[P_GS0] + P[P_GW] - 0.12f) + shift;
+            const float in_t = clamp(st.y, P[P_GT0] + 0.12f, P[P_GT0] + P[P_GH] - 0.12f);
+            float fx, fy;
+            if (P[P_VERTICAL] < 0.5f) { fx = (in_s - P[P_GS0]) / px - 0.5f; fy = (in_t - P[P_GT0]) / px - 0.5f; }
+            else                      { fx = (P[P_GT0] + P[P_GH] - in_t) / px - 0.5f; fy = (in_s - P[P_GS0]) / px - 0.5f; }
+            const vec3 edge_light = sample_frame(fx, fy, uint(P[P_FW]), uint(P[P_FH]));
+            const float prof = exp(-max(d_gate, 0.0f) / P[P_FLARE_WIDTH]);
+            e += P[P_FLARE_AMP] * prof * edge_light;
+        }
+        // Edge fog: warm exposure decaying inward from each long edge, slowly
+        // varying along the length; and the spool leaks, seeded blobs on an edge.
+        // (clamped: the canvas reaches past the film, where there is none to fog)
+        const float d_top = max(st.y, 0.0f), d_bot = max(W - st.y, 0.0f);
+        const uint seed = uint(P[P_FOG_SEED]);
+        const float period = max(P[P_FOG_PERIOD], 0.1f);
+        const float nz = 0.6f * value_noise(st.x / period, seed) +
+                         0.4f * value_noise(st.x / (0.37f * period), seed ^ 0xA5A5A5A5u);
+        float fog = P[P_FOG_AMP] * exp(-min(d_top, d_bot) / max(P[P_FOG_WIDTH], 1e-3f)) * (0.3f + 0.7f * nz);
+        const uint nl = uint(P[P_N_LEAKS]);
+        for (uint k = 0; k < nl; ++k) {
+            const uint b = P_LEAKS + 5u * k;
+            const float dd = P[b + 1u] < 0.5f ? d_top : d_bot;
+            const float ds = st.x - P[b];
+            fog += P[b + 2u] * exp(-ds * ds / (2.0f * P[b + 3u] * P[b + 3u])) * exp(-dd / P[b + 4u]);
+        }
+        e += fog * vec3(P[P_FOG_R], P[P_FOG_G], P[P_FOG_B]);
+    }
+    dst[3u * i] = e.x;
+    dst[3u * i + 1u] = e.y;
+    dst[3u * i + 2u] = e.z;
+
+}

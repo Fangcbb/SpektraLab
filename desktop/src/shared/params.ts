@@ -185,6 +185,7 @@ export interface FilmEdgeSettings {
   view: string;
   gate: string;
   holes: string;
+  carrier: string;
   cameraSeed: number;
   frameSeed: number;
   frameNumber: number;
@@ -202,6 +203,7 @@ export const FILM_EDGE_DEFAULT: FilmEdgeSettings = {
   view: 'strip',
   gate: 'auto',
   holes: 'white',
+  carrier: 'black',
   cameraSeed: 1,
   frameSeed: 1,
   frameNumber: 0,
@@ -229,6 +231,7 @@ export interface DateBackSettings {
   withData: boolean;
   dataText: string;
   customText?: string | null;
+  customTextB?: string | null;
   camera?: string | null;
   framing: string;
   frameScale: number;
@@ -248,6 +251,7 @@ export const DATE_BACK_DEFAULT: DateBackSettings = {
   withData: false,
   dataText: '',
   customText: null,
+  customTextB: null,
   camera: '135',
   framing: '',
   frameScale: 1,
@@ -256,6 +260,7 @@ export const DATE_BACK_DEFAULT: DateBackSettings = {
 // ------------------------------------------------------------- FilmParams
 
 export interface FilmParams {
+  cameraFilter: string;
   filmStock: string;
   printStock: string;
   exposureCompensationEV: number;
@@ -288,6 +293,7 @@ export interface FilmParams {
 }
 
 export const FILM_PARAMS_DEFAULT: FilmParams = {
+  cameraFilter: '',
   filmStock: 'kodak_portra_400',
   printStock: 'kodak_supra_endura',
   exposureCompensationEV: 0,
@@ -383,7 +389,7 @@ export interface FeatureGate {
   dateImprint: boolean;
   /** Settings ▸ Rendering: RFC-028 §10 blue compensation. */
   diBlueCompensation: boolean;
-  /** FeatureFlags.toneMask on macOS: withdrawn, so never on the wire. */
+  /** The portable engine supports the virtual contrast mask. */
   toneMask: boolean;
 }
 export const ALL_FEATURES: FeatureGate = {
@@ -393,7 +399,7 @@ export const ALL_FEATURES: FeatureGate = {
   overscan: true,
   dateImprint: true,
   diBlueCompensation: false,
-  toneMask: false,
+  toneMask: true,
 };
 
 export function featureGate(unsupported: readonly string[] | undefined, diBlue = false): FeatureGate {
@@ -405,12 +411,12 @@ export function featureGate(unsupported: readonly string[] | undefined, diBlue =
     overscan: !u.has('overscan'),
     dateImprint: !u.has('date_imprint'),
     diBlueCompensation: diBlue,
-    toneMask: false,
+    toneMask: !u.has('contrast_mask'),
   };
 }
 
 export function effectiveEDR(p: FilmParams): boolean {
-  return p.extendedDynamicRange && !p.scanFilm && !p.digitalIntermediate;
+  return p.extendedDynamicRange && !p.scanFilm && !p.digitalIntermediate && p.printStock!=='ilford_multigrade_iv_rc';
 }
 
 export function digitalIntermediateActive(p: FilmParams, filmIsPositive: boolean): boolean {
@@ -423,11 +429,16 @@ export function digitalIntermediateActive(p: FilmParams, filmIsPositive: boolean
  * from the Mac never makes the host refuse the whole delta; the setting itself
  * stays in the sidecar.
  */
+// Product profile calibration, matching Model/Params.swift ownGrain/filter 2.
+export const BW_GRAIN:Record<string,number>={kodak_tri_x_400:1.70,kodak_tmax_100:.74,fujifilm_neopan_acros_100_ii:.64,ilford_hp5_plus_400:1.49};
+export const isMonochromeFilm=(stock:string)=>Object.hasOwn(BW_GRAIN,stock);
+
 export function wire(p: FilmParams, gate: FeatureGate = ALL_FEATURES): WireField[] {
   const di = gate.digitalIntermediate && p.digitalIntermediate;
-  const placement = p.placementIsRight ? p.sceneLatitudeOther : p.sceneLatitude;
+  const placement = !p.filmEdge.pair && p.placementIsRight ? p.sceneLatitudeOther : p.sceneLatitude;
   const f: WireField[] = [
     { name: 'film_stock', value: p.filmStock, layer: 'shoot' },
+    { name:'camera_filter',value:p.cameraFilter,layer:'shoot'},
     { name: 'print_stock', value: p.printStock, layer: 'print' },
     { name: 'exposure_compensation_ev', value: p.exposureCompensationEV, layer: 'shoot' },
   ];
@@ -436,7 +447,7 @@ export function wire(p: FilmParams, gate: FeatureGate = ALL_FEATURES): WireField
     { name: 'auto_exposure', value: p.autoExposure, layer: 'shoot' },
     { name: 'film_format_mm', value: clamp(p.filmFormatMM, 4, 200), layer: 'shoot' },
     { name: 'grain_active', value: p.grainActive, layer: 'shoot' },
-    { name: 'grain_sublayers_active', value: p.grainActive && p.effects.grainLayered, layer: 'shoot' },
+    { name: 'grain_sublayers_active', value: p.grainActive && p.effects.grainLayered && !isMonochromeFilm(p.filmStock), layer: 'shoot' },
     { name: 'halation_active', value: p.halationActive, layer: 'shoot' },
     { name: 'print_exposure', value: printExposure(p.printBrightnessStops), layer: 'print' },
     { name: 'y_filter_shift', value: clamp(p.yFilterShift, -1, 1), layer: 'print' },
@@ -477,18 +488,28 @@ export function wire(p: FilmParams, gate: FeatureGate = ALL_FEATURES): WireField
       { name: 'scene_latitude_max_lift', value: placement.maxLift, layer: 'shoot' },
     );
   }
+  if(p.filmEdge.pair && gate.sceneLatitude) {
+    const other=p.sceneLatitudeOther;
+    f.push({name:'scene_latitude_split',value:0.5,layer:'shoot'},
+      {name:'scene_latitude_b_active',value:other.active,layer:'shoot'},
+      {name:'scene_latitude_b_highlight_knee',value:other.highlightKnee,layer:'shoot'},
+      {name:'scene_latitude_b_highlight_room',value:other.highlightRoom,layer:'shoot'},
+      {name:'scene_latitude_b_shadow_knee',value:other.shadowKnee,layer:'shoot'},
+      {name:'scene_latitude_b_shadow_room',value:other.shadowRoom,layer:'shoot'});
+  }
   const e = p.effects;
   const r = EFFECT_RANGES;
   f.push(
     { name: 'halation_amount', value: clamp(e.halation, r.halation[0], r.halation[1]), layer: 'shoot' },
     { name: 'halation_scatter_amount', value: clamp(e.scatter, r.scatter[0], r.scatter[1]), layer: 'shoot' },
-    { name: 'grain_amount', value: clamp(e.grain, r.grain[0], r.grain[1]), layer: 'shoot' },
+    { name: 'grain_amount', value: clamp(e.grain*(BW_GRAIN[p.filmStock]??1), r.grain[0], r.grain[1]), layer: 'shoot' },
     { name: 'dir_couplers_active', value: e.couplersActive, layer: 'shoot' },
     { name: 'dir_couplers_amount', value: clamp(e.couplers, r.couplers[0], r.couplers[1]), layer: 'shoot' },
     { name: 'glare_amount', value: clamp(e.glare, r.glare[0], r.glare[1]), layer: 'print' },
     { name: 'antihalation_removed', value: e.antihalationRemoved, layer: 'shoot' },
     { name: 'halation_boost_ev', value: clamp(e.highlightBoost, r.highlightBoost[0], r.highlightBoost[1]), layer: 'shoot' },
   );
+  if(isMonochromeFilm(p.filmStock) && p.printStock==='ilford_multigrade_iv_rc')f.push({name:'c_filter_neutral',value:0,layer:'print'},{name:'m_filter_neutral',value:0,layer:'print'},{name:'y_filter_neutral',value:68,layer:'print'});
   if (gate.digitalIntermediate) {
     f.push(
       { name: 'digital_intermediate', value: p.digitalIntermediate, layer: 'print' },
@@ -501,6 +522,7 @@ export function wire(p: FilmParams, gate: FeatureGate = ALL_FEATURES): WireField
   }
   if (gate.overscan) {
     const fe = p.filmEdge;
+    f.push({ name: 'overscan_pair',value:fe.pair,layer:'shoot'});
     f.push({ name: 'overscan_active', value: fe.active, layer: 'shoot' });
     if (fe.active) {
       f.push(
@@ -508,12 +530,13 @@ export function wire(p: FilmParams, gate: FeatureGate = ALL_FEATURES): WireField
         { name: 'overscan_mode', value: fe.view, layer: 'shoot' },
         { name: 'overscan_gate', value: fe.gate, layer: 'shoot' },
         { name: 'overscan_holes', value: fe.holes, layer: 'shoot' },
+        { name: 'overscan_carrier', value: fe.carrier, layer: 'shoot' },
         { name: 'overscan_camera_seed', value: clamp(Math.round(fe.cameraSeed), 0, 2147483647), layer: 'shoot' },
         { name: 'overscan_frame_seed', value: clamp(Math.round(fe.frameSeed), 0, 2147483647), layer: 'shoot' },
         { name: 'overscan_frame_number', value: clamp(Math.round(fe.frameNumber), 0, 99), layer: 'shoot' },
         { name: 'overscan_fog', value: clamp(fe.fog, 0, 4), layer: 'shoot' },
         { name: 'overscan_leaks', value: clamp(fe.leaks, 0, 4), layer: 'shoot' },
-        { name: 'overscan_edge_text', value: fe.edgeText, layer: 'shoot' },
+        { name: 'overscan_edge_text', value: fe.edgeText || p.filmStock.replaceAll('_',' ').toUpperCase(), layer: 'shoot' },
         { name: 'overscan_f_number', value: clamp(fe.fNumber, 0, 64), layer: 'shoot' },
       );
     }
@@ -526,8 +549,9 @@ export function wire(p: FilmParams, gate: FeatureGate = ALL_FEATURES): WireField
       if (!(gate.overscan && p.filmEdge.active))
         f.push({ name: 'overscan_format', value: d.camera ?? '135', layer: 'shoot' });
       f.push(
+        { name:'date_imprint_text_b',value:p.filmEdge.pair ? d.customTextB ?? d.customText ?? d.textB : '',layer:'shoot'},
         { name: 'date_imprint_style', value: d.face, layer: 'shoot' },
-        { name: 'date_imprint_text', value: d.customText ?? d.text, layer: 'shoot' },
+        { name: 'date_imprint_text', value: d.face==='data' ? d.dataText : d.customText ?? d.text, layer: 'shoot' },
         { name: 'date_imprint_placement', value: d.placement, layer: 'shoot' },
         { name: 'date_imprint_corner', value: d.corner, layer: 'shoot' },
         { name: 'date_imprint_inset_x', value: clamp(d.insetXMM, 0, 30), layer: 'shoot' },

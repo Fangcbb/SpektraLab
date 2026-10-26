@@ -1,3 +1,4 @@
+import { flushPairEdits } from '../state/session';
 // ExportPage.tsx — the export page (`Export/ExportPage.swift`, drawn to
 // `reference_layout/Export_Page`): recipes on the left, the frame in the
 // middle, the batch (the picked frames) on the right.
@@ -15,6 +16,9 @@ import { platform, baseName } from '../platform';
 import { select, sessionStore, setPages, useSession } from '../state/session';
 import { Thumb } from '../windows/Filmstrip';
 import { GEOMETRY_DEFAULT } from '@shared/geometry';
+import {canvasGeometry,cutsFrame,filmCanvasSize} from '@shared/filmGeometry';
+import {frameImages} from '../state/frames';
+import {useSettings} from '../state/settings';
 import { useOutput } from '../canvas/output';
 import { type ExportRecipe, DEFAULT_RECIPES, NAME_TOKENS, type NameToken, decodeRecipes, extensionOf } from './recipes';
 import { exportCube, exportFrame, hostWrites, outputFor, targetFor, type ExportOutcome } from './exporter';
@@ -66,6 +70,8 @@ export function ExportPage() {
   const geometry = useSession((s) => s.sidecar.geometry);
   const adjustments = useSession((s) => s.sidecar.adjustments);
   const native = useSession((s) => s.nativeSize);
+  const badge=useSession(s=>s.badge);
+  const previewEdge=useSettings(s=>s.previewLongEdge);
   const saved = useSession((s) => s.savedGeometry);
   const output = useOutput();
   const [recipes, setRecipes] = useState<ExportRecipe[]>(DEFAULT_RECIPES);
@@ -103,9 +109,10 @@ export function ExportPage() {
   if (!open) return null;
   const frames = picked.length ? picked : selection ? [selection] : [];
   const writesEdits = hostWrites(hello?.methods as string[] | undefined);
-  const size = native ? outputFor(r, geometry, native) : null;
+  const size = native ? outputFor(r,canvasGeometry(params,geometry),filmCanvasSize(native,frameImages.print,params,previewEdge,badge==='full')) : null;
 
   const run = async () => {
+    await flushPairEdits();
     stop.current = false;
     setLog([]);
     sessionStore.setState({ batchExporting: true });
@@ -126,6 +133,7 @@ export function ExportPage() {
           r,
           {
             path,
+            pair:s.pair,
             session: s.engineSession,
             params: s.sidecar.params,
             adjustments: s.sidecar.adjustments,
@@ -312,7 +320,7 @@ export function ExportPage() {
                 <Checkbox on={r.longEdge === 0} label={tz('Original size', '原始尺寸')} onChange={(v) => edit({ longEdge: v ? 0 : 3000 })} />
                 <span className="caption">{tz('Original', '原始')}</span>
                 {r.longEdge > 0 && <NumberField value={r.longEdge} decimals={0} onCommit={(v) => edit({ longEdge: Math.max(16, Math.round(v)) })} />}
-                <span className="caption num">{size ? `${size.width} × ${size.height}` : ''}</span>
+                <span className="caption num">{size ? `${cutsFrame(params) && badge!=='full'?'≈ ':''}${size.width} × ${size.height}` : ''}</span>
               </div>
             </Section>
             <Section id="exp-summary" title={tz('Summary', '摘要')}>

@@ -32,7 +32,7 @@ export function tauriPlatform(): Platform {
         filters: [
           {
             name: 'Photographs',
-            extensions: ['nef', 'NEF', 'arw', 'ARW', 'cr2', 'CR2', 'cr3', 'CR3', 'raf', 'RAF', 'dng', 'DNG', 'orf', 'ORF', 'rw2', 'RW2', 'pef', 'PEF', 'srw', 'SRW', 'tif', 'tiff', 'TIF', 'TIFF', 'jpg', 'jpeg', 'JPG', 'JPEG', 'png', 'PNG'],
+            extensions: ['spektrapair','nef', 'NEF', 'arw', 'ARW', 'cr2', 'CR2', 'cr3', 'CR3', 'raf', 'RAF', 'dng', 'DNG', 'orf', 'ORF', 'rw2', 'RW2', 'pef', 'PEF', 'srw', 'SRW', 'tif', 'tiff', 'TIF', 'TIFF', 'jpg', 'jpeg', 'JPG', 'JPEG', 'png', 'PNG'],
           },
           { name: 'All files', extensions: ['*'] },
         ],

@@ -1,120 +1,77 @@
-// Exercise Windows feature refusals through the exported DLL boundary.
+// End-to-end gates for the effects ported from Metal to Vulkan.
 #include "spektrafilm/spk_engine.h"
-
-#include <array>
+#include <algorithm>
 #include <iostream>
 #include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
-
 namespace {
-
-void require(bool condition, const std::string& message) {
-    if (!condition) throw std::runtime_error(message);
+void require(bool ok,const std::string& message) {if(!ok)throw std::runtime_error(message);}
+std::vector<uint16_t> render(spk_engine* e,spk_session* s,uint32_t& w,uint32_t& h) {
+    spk_result r{};const auto status=spk_render(s,"full",&r);
+    require(status==SPK_OK && r.rgba16 && r.texture,std::string("render: ")+spk_last_error(e));
+    w=r.width;h=r.height;std::vector<uint16_t> pixels(size_t(w)*h*4);
+    for(uint32_t y=0;y<h;++y)std::copy_n(r.rgba16+size_t(y)*r.row_stride_px*4,size_t(w)*4,pixels.data()+size_t(y)*w*4);
+    spk_result_free(&r);return pixels;
 }
-
-std::string params(spk_session* session) {
-    char* json = nullptr;
-    require(spk_get_params(session, &json) == SPK_OK && json, "get_params failed");
-    std::string result(json);
-    spk_string_free(json);
-    return result;
 }
-
-void render(spk_engine* engine, spk_session* session) {
-    spk_result result{};
-    const spk_status status = spk_render(session, "full", &result);
-    const bool valid = status == SPK_OK && result.rgba16 && result.texture &&
-                       result.width == 32 && result.height == 16;
-    const std::string error = spk_last_error(engine);
-    spk_result_free(&result);
-    require(valid, "default render failed after a refused request: " + error);
-}
-
-}  // namespace
-
-int main(int argc, char** argv) {
-    if (argc != 2) { std::cerr << "usage: spk_windows_feature_boundaries resources_dir\n"; return 2; }
+int main(int argc,char**argv) {
+    if(argc!=2)return 2;
     try {
-        std::unique_ptr<spk_engine, decltype(&spk_engine_destroy)> engine(
-            spk_engine_create(argv[1], nullptr), spk_engine_destroy);
-        require(bool(engine), std::string("engine creation failed: ") + spk_last_error(nullptr));
-        const char* capabilities = spk_capabilities(engine.get());
-        require(capabilities && std::string(capabilities).find("unsupported_features") != std::string::npos,
-                "Windows capabilities must disclose unported effects");
-
-        std::vector<float> pixels(32 * 16 * 3);
-        for (size_t i = 0; i < pixels.size(); ++i) pixels[i] = 0.025f + float(i % 31) * 0.025f;
-        const spk_image input{pixels.data(), 32, 16, 3};
-        std::unique_ptr<spk_session, decltype(&spk_session_release)> session(
-            spk_open(engine.get(), &input, nullptr, nullptr), spk_session_release);
-        require(bool(session), std::string("default open failed: ") + spk_last_error(engine.get()));
-        render(engine.get(), session.get());
-        const std::string before = params(session.get());
-
-        struct Feature { const char* key; const char* label; };
-        const std::array<Feature, 5> features{{
-            {"digital_intermediate", "digital intermediate"},
-            {"scene_latitude_active", "scene latitude mapping"},
-            {"contrast_mask_active", "contrast mask"},
-            {"overscan_active", "overscan"},
-            {"date_imprint_active", "date imprint"},
-        }};
-        for (const Feature& feature : features) {
-            // Include a supported change to catch partial application before
-            // the unsupported field is rejected.
-            const std::string delta = std::string("{\"") + feature.key +
-                                      "\":true,\"print_exposure\":1.25}";
-            const spk_status status = spk_set_params(session.get(), delta.c_str(), nullptr);
-            const std::string error = spk_last_error(engine.get());
-            require(status == SPK_ERR_USER && error.find(feature.label) != std::string::npos &&
-                    error.find("Windows Vulkan backend") != std::string::npos,
-                    std::string("unclear feature refusal: ") + feature.key + ": " + error);
-            require(params(session.get()) == before, std::string("refused delta mutated params: ") + feature.key);
-            render(engine.get(), session.get());
-
-            spk_session* rejected = spk_open(engine.get(), &input, delta.c_str(), nullptr);
-            const std::string open_error = spk_last_error(engine.get());
-            if (rejected) spk_session_release(rejected);
-            require(!rejected && open_error.find(feature.label) != std::string::npos,
-                    std::string("open accepted an unported effect: ") + feature.key);
+        std::unique_ptr<spk_engine,decltype(&spk_engine_destroy)> e(spk_engine_create(argv[1],nullptr),spk_engine_destroy);
+        require(bool(e),spk_last_error(nullptr));
+        const std::string base=R"("grain_active":false,"glare_active":false,"halation_active":false,"auto_exposure":false)";
+        std::vector<float> pixels(96*64*3);
+        for(size_t i=0;i<pixels.size();++i)pixels[i]=0.005f+float(i%191)*0.001f;
+        spk_image input{pixels.data(),96,64,3};
+        auto open=[&](const std::string& extra) {
+            auto* s=spk_open(e.get(),&input,("{"+base+extra+"}").c_str(),nullptr);
+            require(s!=nullptr,std::string("open ")+extra+": "+spk_last_error(e.get()));return s;
+        };
+        auto* normal=open("");uint32_t w,h;const auto reference=render(e.get(),normal,w,h);spk_session_release(normal);
+        const std::vector<std::string> deltas={
+            R"(,"scene_latitude_active":true,"scene_latitude_highlight_knee":-1,"scene_latitude_highlight_room":1)",
+            R"(,"contrast_mask_active":true,"contrast_mask_highlights":1,"contrast_mask_shadows":1)",
+            R"(,"overscan_active":true,"overscan_format":"135")",
+            R"(,"date_imprint_active":true,"date_imprint_text":"26 10 25","date_imprint_size":2,"date_imprint_ev":6)",
+            R"(,"digital_intermediate":true)"};
+        for(const auto& delta:deltas) {
+            auto* s=open(delta);const auto image=render(e.get(),s,w,h);
+            require(image!=reference,"ported effect did not change pixels: "+delta);
+            require(w>0 && h>0,"empty output");
+            if(delta.find("overscan_active")!=std::string::npos) {
+                require(w>96 || h>64,"film edge did not expand the frame");
+                char* geometry=nullptr;require(spk_overscan_geometry(s,&geometry)==SPK_OK && geometry,"missing film geometry");
+                require(std::string(geometry).find("true")!=std::string::npos,"invalid film geometry");spk_string_free(geometry);
+            }
+            if(delta.find("contrast_mask_active")!=std::string::npos) {
+                const float* field=nullptr;uint32_t fw=0,fh=0;
+                require(spk_contrast_mask_field(s,"full",&field,&fw,&fh)==SPK_OK && field && fw && fh,"empty active mask field");
+            }
+            spk_session_release(s);
         }
-
-        spk_result di{};
-        char* di_json = nullptr;
-        const spk_status di_status = spk_render_digital_intermediate(session.get(), &di, &di_json);
-        const std::string di_error = spk_last_error(engine.get());
-        const bool empty = !di.texture && !di.rgba16 && !di_json;
-        spk_result_free(&di);
-        spk_string_free(di_json);
-        require(di_status == SPK_ERR_USER && empty &&
-                di_error.find("digital intermediate") != std::string::npos,
-                "DI API did not return a clear refusal and empty result");
-        require(params(session.get()) == before, "DI refusal mutated the session");
-        render(engine.get(), session.get());
-
-        const float* mask = nullptr;
-        uint32_t width = 0, height = 0;
-        require(spk_contrast_mask_field(session.get(), "full", &mask, &width, &height) == SPK_OK &&
-                !mask && width == 0 && height == 0, "disabled contrast mask must have an empty field");
-
-        // Latitude analysis uses the existing pipeline; only applying its
-        // mapping is unported. This also exercises probe_medium's readback.
-        char* latitude_json = nullptr;
-        const spk_status latitude_status = spk_scene_latitude(session.get(), nullptr, &latitude_json);
-        const std::string latitude_error = spk_last_error(engine.get());
-        const bool latitude_valid = latitude_json &&
-            std::string(latitude_json).find("\"medium\"") != std::string::npos &&
-            std::string(latitude_json).find("\"scene\"") != std::string::npos;
-        spk_string_free(latitude_json);
-        require(latitude_status == SPK_OK && latitude_valid, "latitude analysis failed: " + latitude_error);
-        require(params(session.get()) == before, "latitude analysis mutated the session");
-        render(engine.get(), session.get());
-        std::cout << "Windows feature boundaries passed (5 flags, DI refusal, mask off, latitude analysis)\n";
+        // Crop belongs before the film gate. An upstream crop must produce
+        // the same physical image as handing the engine the cropped pixels.
+        std::vector<float> square(64*64*3);
+        for(size_t y=0;y<64;++y)std::copy_n(pixels.data()+(y*96+16)*3,64*3,square.data()+y*64*3);
+        const std::string film=",\"overscan_active\":true,\"overscan_format\":\"120_6x6\",\"dir_couplers_active\":false";
+        auto* cut=open(film+",\"geometry_crop_x\":0.16666666666666666,\"geometry_crop_w\":0.6666666666666666");
+        uint32_t cw,ch;const auto cut_image=render(e.get(),cut,cw,ch);spk_session_release(cut);
+        spk_image square_input{square.data(),64,64,3};
+        auto* explicit_cut=spk_open(e.get(),&square_input,("{"+base+film+"}").c_str(),nullptr);
+        require(explicit_cut!=nullptr,"explicit cropped input failed");
+        const auto square_image=render(e.get(),explicit_cut,w,h);spk_session_release(explicit_cut);
+        require(w==cw && h==ch && square_image.size()==cut_image.size(),"crop changed film layout dimensions");
+        for(size_t i=0;i<square_image.size();++i)require(std::abs(int(square_image[i])-int(cut_image[i]))<=2,"film gate crop differs from explicitly cropped source");
+        auto* s=open("");spk_result di{};char* metadata=nullptr;
+        require(spk_render_digital_intermediate(s,&di,&metadata)==SPK_OK && di.rgba16 && metadata,
+                std::string("Cineon DI API: ")+spk_last_error(e.get()));
+        require(di.width==96 && di.height==64,"DI dimensions");spk_result_free(&di);spk_string_free(metadata);spk_session_release(s);
+        // Invalid requests must still be rejected after removing the old feature refusals.
+        s=open("");require(spk_set_params(s,R"({"geometry_crop_w":0})",nullptr)==SPK_ERR_USER,"invalid crop range accepted");
+        render(e.get(),s,w,h);spk_session_release(s);
+        std::cout<<"five ported effects, active mask, expanded film geometry, Cineon API and invalid range gates passed\n";
         return 0;
-    } catch (const std::exception& error) {
-        std::cerr << error.what() << '\n';
-        return 1;
-    }
+    } catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}
 }

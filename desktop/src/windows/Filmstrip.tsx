@@ -76,7 +76,7 @@ export function Thumb({ path, geometry, height = CELL_H }: { path: string; geome
   useEffect(() => {
     const c = ref.current;
     if (!c || !img) return;
-    const plan = thumbnailGeometryPlan(geometry, { width: img.naturalWidth, height: img.naturalHeight }, height);
+    const plan = thumbnailGeometryPlan(thumbs.isFramed(path)?GEOMETRY_DEFAULT:geometry, { width: img.naturalWidth, height: img.naturalHeight }, height);
     c.width = plan.width;
     c.height = plan.height;
     const ctx = c.getContext('2d')!;
@@ -94,7 +94,7 @@ export function Thumb({ path, geometry, height = CELL_H }: { path: string; geome
       ctx.closePath();
       ctx.fill('evenodd');
     }
-  }, [img, geometry, height]);
+  }, [img, geometry, height,path]);
   if (!url) return <div className="placeholder" />;
   return <canvas ref={ref} />;
 }

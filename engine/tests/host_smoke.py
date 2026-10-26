@@ -231,12 +231,29 @@ def extras(host, sid, path, tmp, label, raw, probe):
     check(h["ok"] and h["result"].get("valid") is False, f"{label}: overscan_geometry (refused feature -> invalid)")
     h, _ = host.call("progress", {"session": sid})
     check(h["ok"] and "pct" in h["result"], f"{label}: progress", h.get("error"))
-    # The five refused features are refused by name, and leave the session usable.
-    for field in ("contrast_mask_active", "scene_latitude_active", "overscan_active", "date_imprint_active",
-                  "digital_intermediate"):
-        h, _ = host.call("set_params", {"session": sid, "delta": {field: True}})
-        check(not h["ok"] and h["error"]["code"] == "bad_request" and "not implemented" in h["error"]["message"],
-              f"{label}: {field} refused", h.get("error", {}).get("message", "accepted?!"))
+    # Each newly ported effect must execute, and toggling it off restores a usable session.
+    ratio = 36.25 / 24.3
+    w, ht = probe["width"], probe["height"]
+    cw, ch = (ht * ratio / w, 1) if w / ht > ratio else (1, w / ratio / ht)
+    framing={"geometry_crop_x": (1-cw)/2, "geometry_crop_y": (1-ch)/2,
+             "geometry_crop_w": cw, "geometry_crop_h": ch}
+    features = [
+        {"contrast_mask_active": True, "contrast_mask_highlights": 1},
+        {"scene_latitude_active": True, "scene_latitude_highlight_knee": -1, "scene_latitude_highlight_room": 1},
+        {"overscan_active": True, "overscan_format": "135", **framing},
+        {"date_imprint_active": True, "date_imprint_text": "26 10 25", "date_imprint_size": 2},
+        {"digital_intermediate": True},
+    ]
+    for delta in features:
+        field=next(iter(delta))
+        h, _=host.call("set_params", {"session":sid,"delta":delta})
+        check(h["ok"],f"{label}: {field} enabled",h.get("error"))
+        if h["ok"]:
+            h, pixels=host.call("render",{"session":sid,"tier":"live","format":"rgba8","display":"srgb"})
+            check(h["ok"] and len(pixels)>0,f"{label}: {field} renders",h.get("error"))
+        h,_=host.call("set_params",{"session":sid,"delta":{field:False,
+            "geometry_crop_x":0,"geometry_crop_y":0,"geometry_crop_w":1,"geometry_crop_h":1}})
+        check(h["ok"],f"{label}: {field} disabled",h.get("error"))
     h, _ = host.call("print_lut_catalog")
     stock = sorted(h["result"].keys())[0]
     h, px = host.call("preview_stock_lut", {"session": sid, "print_stock": stock, "tier": "live",

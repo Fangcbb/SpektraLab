@@ -998,3 +998,20 @@ any other value is refused with the list.
   whose sensitivity has the same table baked in to 2/255; a live session re-develops and returns;
   the 135 and 645 rebates change by at most 1/255 under `w25`.
 - Not verified: colour stocks beyond one render; the app has no control for it.
+
+
+## Vulkan imaging implementation (1.4.0, 2026-10-26)
+
+The existing §11–§15 fields are now implemented off Apple: contrast mask,
+Scene Latitude mapping (including both pair banks), film edge/overscan,
+date/data imprint, Cineon output and camera colour filters. No parameter
+spelling or material profile was changed for this port. Vulkan reports an
+empty `backend.unsupported_features` array for these effects.
+
+`spk_overscan_geometry` returns actual normalized gate quads after a film
+render. Portable text coverage uses bundled OFL Liberation Sans in place of
+CoreText Helvetica; exact font pixels and whole-image Metal parity remain
+unverified. `spk_vulkan_imaging` pins formulae against float64 references and
+`overscan_checks.py` exercises physical layout/date combinations. The file
+host's new pair methods and optional render `pair_gates` are specified in
+`desktop/HOST-PROTOCOL.md`; they do not change the engine C ABI.

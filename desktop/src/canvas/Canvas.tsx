@@ -7,6 +7,7 @@
 // *native* pixels per device pixel, so "100 %" is the frame's own pixels
 // whatever tier is on the canvas (§7.3: zoom selects no tier).
 
+import { ADJUSTMENTS_DEFAULT } from '@shared/adjustments';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   type Geometry,
@@ -24,7 +25,10 @@ import {
   CROP_HANDLES,
   isCorner,
   rotated,
+  isIdentity,
 } from '@shared/geometry';
+import { canvasGeometry, cutsFrame, filmCanvasSize } from '@shared/filmGeometry';
+import { settingsStore } from '../state/settings';
 import { clamp } from '@shared/params';
 import { GLRenderer, type DrawState } from './glRenderer';
 import { frameImages } from '../state/frames';
@@ -95,7 +99,9 @@ export function Canvas() {
 
   const imageVersion = useSession((s) => s.imageVersion);
   const geometry = useSession((s) => s.sidecar.geometry);
-  const adjustments = useSession((s) => s.sidecar.adjustments);
+  const params = useSession((s) => s.sidecar.params);
+  const rawAdjustments = useSession((s) => s.sidecar.adjustments);
+  const adjustments=frameImages.print?.bakedAdjustments?ADJUSTMENTS_DEFAULT:rawAdjustments;
   const nativeSize = useSession((s) => s.nativeSize);
   const view = useSession((s) => s.view);
   const tool = useSession((s) => s.tool);
@@ -128,13 +134,16 @@ export function Canvas() {
     return () => ro.disconnect();
   }, []);
 
-  const native = nativeSize ?? (frameImages.print ? { width: frameImages.print.width, height: frameImages.print.height } : null);
+  const sourceNative=nativeSize ?? frameImages.print;
+  const geometryForCanvas=cropping?geometry:canvasGeometry(params,geometry);
+  const outputNative=sourceNative ? filmCanvasSize(sourceNative,frameImages.print,params,settingsStore.getState().previewLongEdge,badge==='full') : null;
+  const native=cropping?sourceNative:outputNative;
   const layout =
     native && size.width > 0
       ? computeLayout(
           { width: Math.round(size.width * size.dpr), height: Math.round(size.height * size.dpr) },
           native,
-          geometry,
+          geometryForCanvas,
           cropping,
           view,
           cropping ? 24 * size.dpr : 0,
@@ -189,23 +198,23 @@ export function Canvas() {
       editingCrop: cropping ? geometry : null,
       sourceSize: layout.native,
       adjustments,
-      compare: showingOriginal ? 2 : comparing ? 1 : 0,
+      compare: (params.filmEdge.active || (cutsFrame(params) && !isIdentity(geometry))) ? (cropping ? 2 : 0) : showingOriginal ? 2 : comparing ? 1 : 0,
       split: comparePosition,
       surround: SURROUND,
     };
     r.draw(state);
-  }, [imageVersion, layout?.zoom, layout?.offset.x, layout?.offset.y, size, geometry, adjustments, cropping, comparing, comparePosition, showingOriginal, layout]);
+  }, [imageVersion, layout?.zoom, layout?.offset.x, layout?.offset.y, size, geometry, params, adjustments, cropping, comparing, comparePosition, showingOriginal, layout]);
 
   // The output, small: navigator and histogram (the canvas's frame, trap 33).
   useEffect(() => {
     const r = gl.current;
-    if (!r || !native || !frameImages.print) {
+    if (!r || !outputNative || !frameImages.print) {
       publishOutput(null);
       setHistogram(null);
       return;
     }
     const t = setTimeout(() => {
-      const out = outputSize(geometry, native);
+      const out = outputSize(canvasGeometry(params,geometry),outputNative);
       // Small for the navigator and the histogram; larger while the export
       // page shows it as the proof.
       const k = (sessionStore.getState().exportOpen ? 1400 : 256) / Math.max(out.width, out.height);
@@ -215,9 +224,9 @@ export function Canvas() {
         viewport: { width: w, height: h },
         offset: { x: 0, y: 0 },
         outSize: { width: w, height: h },
-        display: geometry,
+        display: canvasGeometry(params,geometry),
         editingCrop: null,
-        sourceSize: native,
+        sourceSize: outputNative,
         adjustments,
         compare: 0,
         split: 0.5,
@@ -239,14 +248,14 @@ export function Canvas() {
           editingCrop: cropping ? geometry : null,
           sourceSize: layout.native,
           adjustments,
-          compare: showingOriginal ? 2 : comparing ? 1 : 0,
+          compare: (params.filmEdge.active || (cutsFrame(params) && !isIdentity(geometry))) ? (cropping ? 2 : 0) : showingOriginal ? 2 : comparing ? 1 : 0,
           split: comparePosition,
           surround: SURROUND,
         });
     }, 60);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [imageVersion, geometry, adjustments, native?.width, native?.height, exportOpen]);
+  }, [imageVersion, geometry, params, adjustments, outputNative?.width, outputNative?.height, exportOpen]);
 
   // ---- pointer
   const drag = useRef<

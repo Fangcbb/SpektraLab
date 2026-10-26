@@ -17,4 +17,5 @@ mkdirSync(resolve(out, 'licenses'), { recursive: true });
 for (const f of readdirSync(resolve(app, 'Licenses'))) {
   if (f.endsWith('.txt')) cpSync(resolve(app, 'Licenses', f), resolve(out, 'licenses', f));
 }
+cpSync(resolve(here,'../../engine/resources/fonts/LICENSE.txt'),resolve(out,'licenses/Liberation-Fonts-OFL-1.1.txt'));
 console.log('assets: copied to public/assets');

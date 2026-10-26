@@ -1,0 +1,106 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "spk_dispatch.glsl"
+layout(local_size_x=256) in;
+float log10(float x) { return log(x) * 0.4342944819032518; }
+vec3 log10(vec3 x) { return log(x) * 0.4342944819032518; }
+layout(std430,binding=0) readonly buffer B0 { float cmy[]; };
+layout(std430,binding=1) readonly buffer B1 { float chd[]; };
+layout(std430,binding=2) readonly buffer B2 { float base[]; };
+layout(std430,binding=3) readonly buffer B3 { float ixs[]; };
+layout(std430,binding=4) readonly buffer B4 { float p[]; };
+layout(std430,binding=5) readonly buffer B5 { uint meta[]; };
+layout(std430,binding=6) writeonly buffer B6 { float dst[]; };
+// contrast_mask.metal -- RFC-024's virtual contrast mask.
+//
+// Two kernels, and neither replaces an existing one. The unmasked print path
+// still runs `spk_spectral_epilogue` unchanged; `spk_mask_epilogue` below is
+// what `print_spectral` dispatches *instead* when the mask is on, and it is
+// that kernel's integral with one change in the epilogue: the image exposure
+// is multiplied by the mask's gain **before** the pre-flash offset is added.
+//
+//     today:   E = max(a * gain + flash, 0) + 1e-10
+//     masked:  E = max(2^delta * (a * gain) + flash, 0) + 1e-10
+//
+// which is RFC-024 §4's `P * [2^delta * A + F]` with `P` left to the existing
+// `spk_print_exposure` node. Deriving `A` here, rather than subtracting the
+// flash back out of a logged total, is §7.2's contract.
+//
+// The mask's coordinate is RFC-024 §5's `x`: the equal-weight mean over the
+// three paper channels of `log2(A_c / A_ref_c)`, where `A_ref` is the
+// negative's own mid-grey through the same enlarger. `x = 0` is mid-grey.
+//
+// `p` is the one parameter block both kernels read:
+//   0..2  the enlarger's setup gain (image exposure only)
+//   3..5  1 / A_ref
+//   6..8  the pre-flash offset (epilogue only)
+//   9 k_lo  10 h_lo  11 lo_on    -- the print-highlight branch
+//   12 k_hi 13 h_hi  14 hi_on    -- the print-shadow branch
+//   15 the gain limit, stops
+
+// The floor under `log2`, relative to mid-grey: 2^-20 is ~6 densities below
+// it, far under any paper's toe. It is a numerical guard, not a signal -- a
+// pixel that lands on it gets a bounded gain from the curve like any other.
+const float kMaskLog2Floor = -20.0f;
+
+vec3 mask_image_exposure(uint i, uint nl) {
+    float c0 = cmy[3u * i], c1 = cmy[3u * i + 1u], c2 = cmy[3u * i + 2u];
+    float a0 = 0.0f, a1 = 0.0f, a2 = 0.0f;
+    for (uint l = 0u; l < nl; ++l) {
+        float d = c0 * chd[3u * l] + c1 * chd[3u * l + 1u] + c2 * chd[3u * l + 2u] + base[l];
+        float t = exp2(-d * 3.321928094887362f);
+        a0 += t * ixs[3u * l]; a1 += t * ixs[3u * l + 1u]; a2 += t * ixs[3u * l + 2u];
+    }
+    return vec3(a0 * p[0], a1 * p[1], a2 * p[2]);
+}
+
+float mask_x(vec3 a) {
+    float s = 0.0f;
+    for (uint c = 0u; c < 3u; ++c) {
+        float r = max(a[c] * p[3u + c], 0.0f);
+        s += max(log2(r), kMaskLog2Floor);   // log2(0) = -inf, then the floor
+    }
+    return s * (1.0f / 3.0f);
+}
+
+// RFC-023's m = 2 branch, `D * H / sqrt(H^2 + D^2)`: slope 1 at the knee,
+// asymptote H.
+float mask_g(float d, float h) { return d * h * inversesqrt(h * h + d * d); }
+
+// delta = f(b) - b, bounded. Exactly 0.0 inside the core and on a disabled
+// branch, so the gain there is exp2(0) = 1.
+float mask_delta(float b) {
+    float delta = 0.0f;
+    if (p[11] != 0.0f && b < p[9]) {
+        float d = p[9] - b;
+        delta = d - mask_g(d, p[10]);
+    } else if (p[14] != 0.0f && b > p[12]) {
+        float d = b - p[12];
+        delta = mask_g(d, p[13]) - d;
+    }
+    // The same smooth-min bounds the gain itself (RFC-023 §15's fix for an
+    // unbounded shadow gain): |delta| < limit for any base.
+    float lim = p[15];
+    return delta * lim * inversesqrt(lim * lim + delta * delta);
+}
+
+// The analysis: one thread per grid cell, the mean of `x` over the cell's
+// pixels. The cells partition the frame (`[cx*W/gw, (cx+1)*W/gw)`), so every
+// pixel is counted exactly once whatever the tier's size.
+
+void main() {
+
+    uint W = meta[0], H = meta[1], gw = meta[2], gh = meta[3], nl = meta[4];
+    uint cell = spk_global_index();
+    if (cell >= gw * gh) return;
+    uint cy = cell / gw, cx = cell % gw;
+    uint x0 = (cx * W) / gw, x1 = max(((cx + 1u) * W) / gw, x0 + 1u);
+    uint y0 = (cy * H) / gh, y1 = max(((cy + 1u) * H) / gh, y0 + 1u);
+    x1 = min(x1, W); y1 = min(y1, H);
+    float acc = 0.0f;
+    for (uint y = y0; y < y1; ++y)
+        for (uint x = x0; x < x1; ++x)
+            acc += mask_x(mask_image_exposure(y * W + x, nl));
+    dst[cell] = acc / float((x1 - x0) * (y1 - y0));
+
+}

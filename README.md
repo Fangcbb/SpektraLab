@@ -121,7 +121,15 @@ and the run still reports 0 failures in ~20 s — trust the duration.
 | `ARCHITECTURE.md` | how it fits together — start here |
 | `AGENTS.md` | conventions and the traps that cost real time |
 
-## Windows development
+## Windows 10 / Windows 11 imaging preview
+
+[Release and installer](https://github.com/Fangcbb/SpektraLab/releases/tag/v1.4.0-windows-preview.1).
+Version 1.4.0 adds film edge, date/data back, half-frame pairs, scene mapping,
+contrast mask, Cineon, B&W profiles and edited image export. Windows JPEG
+thumbnails use WIC; large export edits run in a background worker. See
+[acceptance evidence and remaining differences](engine/tests/reports/windows-imaging-1.4.0.md).
+This is an unsigned x64 preview; physical Windows/GPU acceptance is pending.
+
 
 This branch also contains a C++/Vulkan backend, native LibRaw decoding,
 RGB16 TIFF export and Windows desktop viewers.

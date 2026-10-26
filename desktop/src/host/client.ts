@@ -29,6 +29,8 @@ export interface RgbaImage {
 }
 
 export interface RenderReply extends RgbaImage {
+  pairGates?:number[][];
+  bakedAdjustments?:boolean;
   tier: Tier;
   reprinted: boolean;
   ms: number;
@@ -108,12 +110,12 @@ export class Host {
   }
   async render(session: string, tier: Tier, opts: { reprint?: boolean; progressId?: string } = {}): Promise<RenderReply> {
     const t0 = performance.now();
-    const r = await this.call<{ image: ImageInfo; tier: Tier; reprinted: boolean }>(
+    const r = await this.call<{ image: ImageInfo; tier: Tier; reprinted: boolean;pair_gates?:number[][] }>(
       'render',
       { session, tier, reprint: opts.reprint ?? false, format: 'rgba8', display: 'srgb', progress_id: opts.progressId },
       tier === 'full' ? 900_000 : 180_000,
     );
-    return { ...rgba8(r.result.image, r.payload), tier: r.result.tier ?? tier, reprinted: !!r.result.reprinted, ms: performance.now() - t0 };
+    return { ...rgba8(r.result.image, r.payload), pairGates:r.result.pair_gates, tier: r.result.tier ?? tier, reprinted: !!r.result.reprinted, ms: performance.now() - t0 };
   }
   async sceneLatitude(session: string, request: Record<string, unknown>): Promise<Record<string, unknown>> {
     return (await this.call<Record<string, unknown>>('scene_latitude', { session, request })).result;

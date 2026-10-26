@@ -11,6 +11,7 @@ export interface Stock {
   hasPreviewLUT: boolean;
   pairedFilm?: string | null;
   cover?: string | null;
+  monochrome?:boolean;
   formats?: string[] | null;
 }
 
@@ -32,11 +33,12 @@ export class StockCatalog {
     return this.stock(id)?.type === 'positive';
   }
   /** Still first, then cine, as the Mac picker orders them; then by polarity. */
-  filmGroups(): { title: 'Positive' | 'Negative'; films: Stock[] }[] {
+  filmGroups(): { title: 'Positive' | 'Negative' | 'Black and white'; films: Stock[] }[] {
     const ordered = [...this.films.filter((s) => s.use !== 'cine'), ...this.films.filter((s) => s.use === 'cine')];
     return [
       { title: 'Positive', films: ordered.filter((s) => s.type === 'positive') },
-      { title: 'Negative', films: ordered.filter((s) => s.type !== 'positive') },
+      { title: 'Negative', films: ordered.filter((s) => s.type !== 'positive' && !s.monochrome) },
+      { title: 'Black and white', films: ordered.filter(s=>s.monochrome) },
     ];
   }
   paperGroups(): { title: 'Still' | 'Cine'; papers: Stock[] }[] {

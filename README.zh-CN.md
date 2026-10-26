@@ -83,7 +83,13 @@ xcodebuild -project Spektrafilm.xcodeproj -scheme SpektrafilmTests \
 | `ARCHITECTURE.md` | 整体结构——从这里开始读 |
 | `AGENTS.md` | 约定，以及真正耗过时间的坑 |
 
-## Windows 开发版
+## Windows 10 / Windows 11 影像功能预览版
+
+[GitHub 发布页与安装包下载](https://github.com/Fangcbb/SpektraLab/releases/tag/v1.4.0-windows-preview.1)。
+1.4.0 加入片边、日期后背、双联、场景定位、反差遮罩、Cineon、黑白胶片及完整编辑导出；
+JPEG 采用 Windows 原生读取，大图导出在后台处理。
+[验证记录与尚存差异](engine/tests/reports/windows-imaging-1.4.0.md)包括镜头自动校正、
+RAW 中性点取样和真实 Windows/GPU 验收限制。安装包面向 x64，未做代码签名。
 
 本分支增加了 C++/Vulkan 后端、原生 LibRaw 解码、RGB16 TIFF 导出和 Windows 桌面界面。
 构建方法见 [Windows 说明](engine/WINDOWS.md)，已验证功能及限制见 [功能覆盖表](engine/WINDOWS_FEATURE_COVERAGE.md)。

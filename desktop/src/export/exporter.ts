@@ -8,8 +8,12 @@
 // the file whole. Without it, `export_image` writes the engine's print and the
 // page says that the crop and the grade are not in the file.
 
-import { type Adjustments, PROPHOTO_MID_GREY, SRGB_MID_GREY, curveTables, isNeutral, layer2Pixel, layer2Uniforms } from '@shared/adjustments';
-import { type Geometry, isIdentity, outputSize, sourcePoint } from '@shared/geometry';
+import { type Adjustments, PROPHOTO_MID_GREY, SRGB_MID_GREY, isNeutral } from '@shared/adjustments';
+import type { HalfFramePair } from '@shared/pair';
+import { pixelsInWorker } from '../canvas/pixelWorker';
+export { filePixels } from '@shared/pixelEdits';
+import { type Geometry, isIdentity, outputSize } from '@shared/geometry';
+import { canvasGeometry } from '@shared/filmGeometry';
 import type { FilmParams } from '@shared/params';
 import type { StockCatalog } from '@shared/stocks';
 import { host } from '../host/client';
@@ -24,6 +28,7 @@ export interface FrameToExport {
   geometry: Geometry;
   native: { width: number; height: number };
   dateTaken?: string;
+  pair?:HalfFramePair|null;
 }
 
 export type ExportOutcome =
@@ -49,50 +54,6 @@ export async function targetFor(r: ExportRecipe, f: FrameToExport, catalog: Stoc
   return { dir, base };
 }
 
-/** The file's pixels: the print (rgba16) → geometry → Layer 2, at `out` size. */
-export function filePixels(
-  src: Uint16Array,
-  srcSize: { width: number; height: number },
-  g: Geometry,
-  a: Adjustments,
-  out: { width: number; height: number },
-  midGrey: number,
-): Uint16Array {
-  const u = layer2Uniforms(a, midGrey);
-  const tables = u.curvesActive ? curveTables(a.curves) : null;
-  const { width: W, height: H } = srcSize;
-  const res = new Uint16Array(out.width * out.height * 4);
-  const k = 1 / 65535;
-  for (let y = 0; y < out.height; y++) {
-    for (let x = 0; x < out.width; x++) {
-      const s = sourcePoint(g, { x: (x + 0.5) / out.width, y: (y + 0.5) / out.height }, srcSize);
-      const fx = Math.min(Math.max(s.x * W - 0.5, 0), W - 1);
-      const fy = Math.min(Math.max(s.y * H - 0.5, 0), H - 1);
-      const x0 = Math.floor(fx);
-      const y0 = Math.floor(fy);
-      const x1 = Math.min(x0 + 1, W - 1);
-      const y1 = Math.min(y0 + 1, H - 1);
-      const tx = fx - x0;
-      const ty = fy - y0;
-      const c: [number, number, number] = [0, 0, 0];
-      for (let ch = 0; ch < 3; ch++) {
-        const p00 = src[(y0 * W + x0) * 4 + ch]!;
-        const p01 = src[(y0 * W + x1) * 4 + ch]!;
-        const p10 = src[(y1 * W + x0) * 4 + ch]!;
-        const p11 = src[(y1 * W + x1) * 4 + ch]!;
-        c[ch] = ((p00 * (1 - tx) + p01 * tx) * (1 - ty) + (p10 * (1 - tx) + p11 * tx) * ty) * k;
-      }
-      const [r, gg, b] = layer2Pixel(c, u, tables, s.x, s.y);
-      const o = (y * out.width + x) * 4;
-      res[o] = Math.round(r * 65535);
-      res[o + 1] = Math.round(gg * 65535);
-      res[o + 2] = Math.round(b * 65535);
-      res[o + 3] = 65535;
-    }
-  }
-  return res;
-}
-
 export function outputFor(r: ExportRecipe, g: Geometry, native: { width: number; height: number }) {
   const o = outputSize(g, native);
   if (!r.longEdge || r.longEdge >= Math.max(o.width, o.height)) return o;
@@ -102,6 +63,7 @@ export function outputFor(r: ExportRecipe, g: Geometry, native: { width: number;
 
 export async function exportFrame(r: ExportRecipe, f: FrameToExport, catalog: StockCatalog, methods: readonly string[] | undefined): Promise<ExportOutcome> {
   try {
+    f={...f,geometry:canvasGeometry(f.params,f.geometry)};
     const { dir, base } = await targetFor(r, f, catalog);
     await platform().ensureDir(dir);
     const target = await resolveTarget(dir, base, extensionOf(r), r.existing, (p) => platform().pathExists(p), joinPath);
@@ -122,7 +84,8 @@ export async function exportFrame(r: ExportRecipe, f: FrameToExport, catalog: St
       const src = new Uint16Array(rr.payload.buffer.slice(rr.payload.byteOffset, rr.payload.byteOffset + info.width * info.height * 8));
       const out = outputFor(r, f.geometry, { width: info.width, height: info.height });
       const midGrey = r.colorSpace === 'prophoto' ? PROPHOTO_MID_GREY : SRGB_MID_GREY;
-      const px = filePixels(src, { width: info.width, height: info.height }, f.geometry, f.adjustments, out, midGrey);
+      const pair=f.pair && (f.pair.left?.adjustments || f.pair.right?.adjustments)?{gates:(rr.result.pair_gates as number[][])??[],adjustments:[f.pair.left?.adjustments??null,f.pair.right?.adjustments??null]}:undefined;
+      const px = await pixelsInWorker({src,srcSize:info,geometry:f.geometry,adjustments:f.adjustments,out,midGrey,pair});
       const w = await host().transport.request(
         'write_image',
         {

@@ -1,8 +1,6 @@
 #include "pipeline.hpp"
 #include "timer.hpp"
-#ifndef __APPLE__
-#include "windows_unported.hpp"
-#endif
+
 
 #include <chrono>
 #include <cmath>
@@ -115,15 +113,6 @@ bool Pipeline::build(const Params& params, std::string& error) {
     const Profile& film = params_.film;
     const Profile& print = params_.print;
 
-#ifndef __APPLE__
-    // Keep upstream's default path intact while its new effects await a
-    // Windows implementation. Refuse before allocating buffers or rendering
-    // a partial result; never silently drop a requested effect.
-    if (const char* unported = windows_unported_error(params_)) {
-        error = unported;
-        return false;
-    }
-#endif
 
     // Configurations this build does not implement. The Python core could
     // return None from a node body and let the dispatcher run the numba
@@ -1803,7 +1792,7 @@ bool Pipeline::film_prefix(const Image& in, const FrameShape& frame, Image& cur,
         // RFC-032 §27: with overscan on, the frame *is* the format's gate, so
         // its long edge in millimetres is the format's, not `film_format_mm`.
         const double long_mm = overscan_wanted() ? overscan_gate_long_mm() : params_.camera.film_format_mm;
-        pixel_size_um_ = long_mm * 1000.0 / double(source_long_edge_);
+        pixel_size_um_ = long_mm * 1000.0 / double(overscan_wanted() ? std::max(cur.w,cur.h) : source_long_edge_);
     }
 
     // The film side's one seed for this run (RFC-020 §4.3, trap 4), drawn here

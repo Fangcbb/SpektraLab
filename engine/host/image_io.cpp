@@ -1,4 +1,6 @@
 #include "image_io.hpp"
+#include "wic_decode.hpp"
+#include "pair_io.hpp"
 
 #include <algorithm>
 #include <bit>
@@ -41,6 +43,7 @@ static void parallel_rows(uint32_t rows, F&& body) {
 
 const char* kind_name(FileKind kind) {
     switch (kind) {
+        case FileKind::Pair: return "pair";
         case FileKind::Raw: return "raw";
         case FileKind::Tiff: return "tiff";
         case FileKind::Jpeg: return "jpeg";
@@ -56,6 +59,7 @@ static std::string lower_ext(const fs::path& path) {
 }
 
 FileKind sniff_kind(const fs::path& path) {
+    if(is_pair_path(path))return FileKind::Pair;
     static const char* raw_exts[] = {".arw", ".nef", ".nrw", ".cr2", ".cr3", ".crw", ".raf", ".dng",
                                      ".orf", ".rw2", ".pef", ".srw", ".3fr", ".iiq", ".erf", ".mos",
                                      ".mrw", ".x3f", ".raw", ".rwl", ".srf", ".sr2", ".kdc", ".dcr",
@@ -638,7 +642,7 @@ static void png_chunks(const std::vector<uint8_t>& f, std::vector<uint8_t>& icc,
     }
 }
 
-static bool decode_stb(const std::vector<uint8_t>& f, FileKind kind, Raster& out, bool header_only, std::string& error) {
+static bool decode_stb(const std::vector<uint8_t>& f, FileKind kind, Raster& out, bool header_only, std::string& error, uint32_t decode_edge=0) {
     if (kind == FileKind::Jpeg) jpeg_segments(f, out.icc, out.meta);
     else png_chunks(f, out.icc, out.meta);
     int w = 0, h = 0, comp = 0;
@@ -649,6 +653,14 @@ static bool decode_stb(const std::vector<uint8_t>& f, FileKind kind, Raster& out
     out.width = uint32_t(w);
     out.height = uint32_t(h);
     if (header_only) return true;
+    if(kind==FileKind::Jpeg) {
+        std::vector<uint8_t> decoded;
+        if(native_jpeg(f,decode_edge,out.width,out.height,decoded)) {
+            out.rgb.assign(decoded.begin(),decoded.end());out.codes=256;
+            std::fprintf(stderr,"spektralab decode: Windows WIC JPEG %ux%u%s\n",out.width,out.height,decode_edge?" thumbnail":"");
+            return true;
+        }
+    }
     const bool deep = stbi_is_16_bit_from_memory(f.data(), int(f.size()));
     out.rgb.resize(size_t(w) * h * 3);
     if (deep) {
@@ -665,11 +677,11 @@ static bool decode_stb(const std::vector<uint8_t>& f, FileKind kind, Raster& out
     return true;
 }
 
-static bool read_raster(const fs::path& path, FileKind kind, Raster& out, bool header_only, std::string& error) {
+static bool read_raster(const fs::path& path, FileKind kind, Raster& out, bool header_only, std::string& error, uint32_t decode_edge=0) {
     std::vector<uint8_t> file;
     if (!read_file(path, file, error)) return false;
     if (kind == FileKind::Tiff) return decode_tiff(file, out, header_only, error);
-    return decode_stb(file, kind, out, header_only, error);
+    return decode_stb(file, kind, out, header_only, error,decode_edge);
 }
 
 static RgbSpace raster_space(const Raster& r, std::string* note) {
@@ -756,6 +768,7 @@ bool probe_file(const fs::path& path, Probe& out, std::string& error) {
     std::error_code ec;
     if (!fs::is_regular_file(path, ec)) { error = "not found: " + path_utf8(path); return false; }
     out.kind = sniff_kind(path);
+    if(out.kind==FileKind::Pair)return probe_pair(path,out,error);
     if (out.kind == FileKind::Unknown) { error = "unrecognised file type: " + path_utf8(path); return false; }
     if (out.kind == FileKind::Raw) {
         auto raw = std::make_unique<LibRaw>(LIBRAW_OPTIONS_NO_DATAERR_CALLBACK);
@@ -777,6 +790,7 @@ bool probe_file(const fs::path& path, Probe& out, std::string& error) {
 
 bool decode_linear_prophoto(const fs::path& path, const DecodeOptions& options, FloatImage& out,
                             Probe& probe, std::string& error) {
+    if(is_pair_path(path))return decode_pair(path,out,probe,error);
     if (!probe_file(path, probe, error)) return false;
     const bool custom_wb = options.temperature_k.has_value();
     if (custom_wb && probe.kind != FileKind::Raw) {
@@ -862,6 +876,7 @@ static void shrink_rgb(std::vector<float>& rgb, uint32_t& w, uint32_t& h, uint32
 }
 
 bool thumbnail(const fs::path& path, uint32_t long_edge, Rgba8& out, std::string& source, std::string& error) {
+    if(is_pair_path(path)){source="half-frame pair";return thumbnail_pair(path,long_edge,out,error);}
     Probe probe;
     if (!probe_file(path, probe, error)) return false;
     if (probe.kind == FileKind::Raw) {
@@ -935,7 +950,7 @@ bool thumbnail(const fs::path& path, uint32_t long_edge, Rgba8& out, std::string
         return true;
     }
     Raster r;
-    if (!read_raster(path, probe.kind, r, false, error)) return false;
+    if (!read_raster(path, probe.kind, r, false, error,long_edge)) return false;
     const RgbSpace space = raster_space(r, nullptr);
     uint32_t w = r.width, h = r.height;
     shrink_rgb(r.rgb, w, h, long_edge);

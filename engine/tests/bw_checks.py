@@ -36,7 +36,8 @@ def overlay(tmp):
     """engine/resources with the product's profiles laid over it, by symlink."""
     res = Path(tmp) / "resources"
     (res / "profiles").mkdir(parents=True)
-    for f in (ENGINE / "resources").iterdir():
+    base = Path(os.environ.get("SPK_TEST_RESOURCES", ENGINE / "resources"))
+    for f in base.iterdir():
         if f.name != "profiles":
             os.symlink(f, res / f.name)
     for d in (ENGINE / "resources" / "profiles", ENGINE / "resources_product" / "profiles"):
